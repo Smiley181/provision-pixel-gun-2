@@ -174,10 +174,10 @@ namespace features {
         g_spread_last_success = false;
 
         bool unity_ready = unity::is_ready();
-        if (unity_ready) {
-            __try { unity::set_recoil_flow_disabled(aimbot_config.recoil_compensation); }
-            __except(EXCEPTION_EXECUTE_HANDLER) {}
-        }
+        __try { unity::set_recoil_flow_disabled(aimbot_config.recoil_compensation && unity_ready); }
+        __except(EXCEPTION_EXECUTE_HANDLER) {}
+        __try { unity::set_no_spread_disabled(misc_config.no_spread && unity_ready); }
+        __except(EXCEPTION_EXECUTE_HANDLER) {}
 
         if (aimbot_config.recoil_compensation && unity_ready) {
             __try { g_recoil_last_success = unity::compensate_recoil(); }
