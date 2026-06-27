@@ -2733,7 +2733,7 @@ namespace unity {
     static PlayerInfo make_player_info(const std::string& name, const Vector3& pos, uintptr_t object_ptr,
         uintptr_t avatar_ptr, int source_type) {
         Vector3 head = pos;
-        head.y += 1.75f;
+        head.y += 2.5f;
 
         PlayerInfo pi;
         pi.name = name;
@@ -3134,7 +3134,7 @@ namespace unity {
             if (has_position_value(pos)) {
                 pi.position = pos;
                 pi.head_position = pos;
-                pi.head_position.y += 1.75f;
+                pi.head_position.y += 2.5f;
             }
             pi.is_valid = has_position_value(pos);
             if (mob) {

@@ -67,7 +67,7 @@ namespace features {
         if (!std::isfinite(raw_height) || raw_height < 4.0f || raw_height > (float)sh * 1.6f)
             return false;
 
-        float raw_width = raw_height * 0.35f;
+        float raw_width = raw_height * 0.5f;
         if (!std::isfinite(raw_width) || raw_width > (float)sw * 0.75f)
             return false;
 
@@ -385,7 +385,7 @@ namespace features {
             Vector3 head_world = player.head_position;
             if (!is_reasonable_world_point(head_world)) {
                 head_world = player.position;
-                head_world.y += 1.75f;
+                head_world.y += 2.5f;
             }
             if (!is_reasonable_world_point(head_world))
                 continue;
@@ -424,7 +424,7 @@ namespace features {
                 height = 18.0f;
             if (height > sh * 0.9f)
                 height = sh * 0.9f;
-            float width = height * 0.35f;
+            float width = height * 0.5f;
             ImVec2 center(head_screen.x, head_screen.y);
             if (center.x + width * 0.5f < 0.0f || center.x - width * 0.5f > (float)sw ||
                 center.y + height < 0.0f || center.y > (float)sh)
