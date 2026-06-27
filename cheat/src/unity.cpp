@@ -2555,12 +2555,20 @@ namespace unity {
         if (!death_component)
             return false;
 
+        // Read the real IsDead backing field at DeathState+0x9 (bool).
+        // This is the game's own auto-property backing field, separate from
+        // the State byte at +0x8 which tracks death animation sub-states.
+        bool is_dead_field = false;
         uint8_t state = 0;
-        __try { state = *(uint8_t*)((uintptr_t)death_component + 0xC8); } // DeathComponent._DeathState.State
-        __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+        __try {
+            is_dead_field = *(bool*)((uintptr_t)death_component + 0xC9); // DeathState._IsDead_k__BackingField
+            state = *(uint8_t*)((uintptr_t)death_component + 0xC8);      // DeathComponent._DeathState.State
+        } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 
+        // Player is dead if either the IsDead backing field is true,
+        // or State byte bit 0 is set (animation-level death flag).
         if (out_dead)
-            *out_dead = (state & 0x1) != 0;
+            *out_dead = is_dead_field || ((state & 0x1) != 0);
         return true;
     }
 
@@ -2572,6 +2580,16 @@ namespace unity {
         if (!hp_bar)
             return false;
 
+        // Primary: call AvatarHpBar.get_IsDead() via its RVA — the game's
+        // own dead check that considers all death/teleportation states.
+        bool method_dead = false;
+        if (invoke_bool_rva(hp_bar, RVA_AvatarHpBar_get_IsDead, &method_dead)) {
+            if (out_dead)
+                *out_dead = method_dead;
+            return true;
+        }
+
+        // Fallback: read _selfDeathComponent and check raw state
         void* death_component = nullptr;
         __try { death_component = *(void**)((uintptr_t)hp_bar + 0x168); } // AvatarHpBar._selfDeathComponent
         __except(EXCEPTION_EXECUTE_HANDLER) { death_component = nullptr; }

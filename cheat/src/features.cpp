@@ -44,7 +44,7 @@ namespace features {
     static bool is_reasonable_world_point(const Vector3& point) {
         return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
             (fabsf(point.x) > 0.01f || fabsf(point.y) > 0.01f || fabsf(point.z) > 0.01f) &&
-            fabsf(point.x) < 100000.0f && fabsf(point.y) < 100000.0f && fabsf(point.z) < 100000.0f;
+            fabsf(point.x) < 2000.0f && fabsf(point.y) < 2000.0f && fabsf(point.z) < 2000.0f;
     }
 
     static bool screen_point_near_view(const Vector2& point, int sw, int sh) {
@@ -380,6 +380,11 @@ namespace features {
             if (!esp_config.show_teammates && player.team_known && player.is_teammate)
                 continue;
             if (!is_reasonable_world_point(player.position))
+                continue;
+
+            // Distance sanity: skip if too far from camera (2x configured max distance)
+            float dist_to_cam = (player.position - cpos).magnitude();
+            if (!std::isfinite(dist_to_cam) || dist_to_cam <= 0.0f || dist_to_cam > esp_config.esp_distance * 2.0f)
                 continue;
 
             Vector3 head_world = player.head_position;
