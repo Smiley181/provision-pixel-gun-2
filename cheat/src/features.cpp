@@ -173,11 +173,17 @@ namespace features {
         g_recoil_last_success = false;
         g_spread_last_success = false;
 
-        if (aimbot_config.recoil_compensation && unity::is_ready()) {
+        bool unity_ready = unity::is_ready();
+        if (unity_ready) {
+            __try { unity::set_recoil_flow_disabled(aimbot_config.recoil_compensation); }
+            __except(EXCEPTION_EXECUTE_HANDLER) {}
+        }
+
+        if (aimbot_config.recoil_compensation && unity_ready) {
             __try { g_recoil_last_success = unity::compensate_recoil(); }
             __except(EXCEPTION_EXECUTE_HANDLER) { g_recoil_last_success = false; }
         }
-        if (misc_config.no_spread && unity::is_ready()) {
+        if (misc_config.no_spread && unity_ready) {
             __try { g_spread_last_success = unity::remove_spread(); }
             __except(EXCEPTION_EXECUTE_HANDLER) { g_spread_last_success = false; }
         }
@@ -296,7 +302,7 @@ namespace features {
         if (cam) { __try { cpos = unity::get_camera_position(cam); } __except(EXCEPTION_EXECUTE_HANDLER) {} }
 
         snprintf(debug_buf, sizeof(debug_buf),
-            "CHEAT|C33 P:%d/%zu Cam:%s R:%s AH:%s A:%s RC:%s NS:%s G:%d/%zu"
+            "CHEAT|C34 P:%d/%zu Cam:%s R:%s AH:%s A:%s RC:%s NS:%s G:%d/%zu"
             " VM:%s PM:%s WM:%s",
             player_count, g_players.size(), camera_ok ? "Y" : "N", unity_ready ? "Y" : "N",
             g_aim_hold_active ? "Y" : "N",
@@ -322,7 +328,7 @@ namespace features {
 
         static DWORD last_grenade_scan = 0;
         if (esp_config.show_grenades) {
-            if (now - last_grenade_scan > 100) {
+            if (now - last_grenade_scan > 250) {
                 last_grenade_scan = now;
                 __try { g_grenades = unity::get_grenades(); }
                 __except(EXCEPTION_EXECUTE_HANDLER) { g_grenades.clear(); }

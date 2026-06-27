@@ -100,6 +100,7 @@ namespace unity {
     Vector3 get_object_position(void* transform);
     Vector3 get_bone_position(void* transform);
     bool aim_at_world(const Vector3& target, float smooth);
+    bool set_recoil_flow_disabled(bool disabled);
     bool compensate_recoil();
     bool remove_spread();
 

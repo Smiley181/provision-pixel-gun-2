@@ -185,6 +185,24 @@ namespace unity {
     static constexpr uintptr_t RVA_SpreadUseComponent_get_State = 0x10088B0;
     static constexpr uintptr_t RVA_DispersionComponent_get_State = 0xFFCC30;
     static constexpr uintptr_t RVA_ProjectileViewBase_Kinematic_get_IsFinished = 0xBBCEA0;
+    static constexpr uintptr_t RVA_RecoilSystem_ContinueRecoilFlow = 0x1029DF0;
+    static constexpr uintptr_t RVA_RecoilSystem_StartRecoilFlow = 0x102AAD0;
+    static constexpr uintptr_t RVA_RecoilSystem_IncreaseRecoil = 0x102A540;
+
+    struct RuntimePatch {
+        uintptr_t rva;
+        uint8_t patch[8];
+        size_t len;
+        uint8_t original[8];
+        bool original_valid;
+        bool applied;
+    };
+
+    static RuntimePatch g_recoil_flow_patches[] = {
+        { RVA_RecoilSystem_ContinueRecoilFlow, { 0x31, 0xC0, 0xC3 }, 3, {}, false, false },
+        { RVA_RecoilSystem_StartRecoilFlow,    { 0x31, 0xC0, 0xC3 }, 3, {}, false, false },
+        { RVA_RecoilSystem_IncreaseRecoil,     { 0x31, 0xC0, 0xC3 }, 3, {}, false, false },
+    };
 
     int get_debug_player_count() { return g_player_count; }
     bool get_debug_camera_found() { return g_camera_found; }
@@ -820,6 +838,52 @@ namespace unity {
         return true;
     }
 
+    static bool write_runtime_patch(RuntimePatch& patch, bool apply) {
+        if (!il2cpp::module_base || !patch.rva || !patch.len || patch.len > sizeof(patch.patch))
+            return false;
+        if (il2cpp::module_size && patch.rva + patch.len > il2cpp::module_size)
+            return false;
+
+        uint8_t* address = (uint8_t*)(il2cpp::module_base + patch.rva);
+        const uint8_t* bytes = apply ? patch.patch : patch.original;
+        if (!apply && !patch.original_valid)
+            return true;
+        if (patch.applied == apply)
+            return true;
+
+        DWORD old_protect = 0;
+        bool ok = false;
+        __try {
+            if (VirtualProtect(address, patch.len, PAGE_EXECUTE_READWRITE, &old_protect)) {
+                if (apply && !patch.original_valid) {
+                    memcpy(patch.original, address, patch.len);
+                    patch.original_valid = true;
+                }
+
+                memcpy(address, bytes, patch.len);
+                FlushInstructionCache(GetCurrentProcess(), address, patch.len);
+
+                DWORD ignored = 0;
+                VirtualProtect(address, patch.len, old_protect, &ignored);
+                patch.applied = apply;
+                ok = true;
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            ok = false;
+        }
+
+        return ok;
+    }
+
+    static bool set_recoil_flow_patch_enabled(bool enabled) {
+        bool ok = true;
+        for (auto& patch : g_recoil_flow_patches) {
+            if (!write_runtime_patch(patch, enabled))
+                ok = false;
+        }
+        return ok;
+    }
+
     static bool patch_weapon_prototype_ballistics(void* weapon_prototype, bool patch_recoil, bool patch_spread) {
         if (!weapon_prototype)
             return false;
@@ -1138,38 +1202,30 @@ namespace unity {
 
     static bool clear_item_use_request_offsets() {
         static DWORD last_scan = 0;
-        static std::vector<uintptr_t> cached_containers;
+        bool wrote = false;
+        if (!scan_interval_elapsed(last_scan, 150))
+            return wrote;
 
-        if (scan_interval_elapsed(last_scan, 100)) {
-            cached_containers.clear();
+        void* container_class = get_item_use_request_container_class();
+        int32_t count = 0;
+        void* arr = nullptr;
+        __try { arr = find_objects_of_type(container_class, count, false); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { arr = nullptr; count = 0; }
 
-            void* container_class = get_item_use_request_container_class();
-            int32_t count = 0;
-            void* arr = nullptr;
-            __try { arr = find_objects_of_type(container_class, count, false); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { arr = nullptr; count = 0; }
-
-            void** elements = nullptr;
-            if (arr && count > 0) {
-                __try { elements = managed_object_array_items(arr); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
-            }
-
-            if (count > 64)
-                count = 64;
-
-            for (int32_t i = 0; elements && i < count; i++) {
-                void* container = nullptr;
-                __try { container = elements[i]; }
-                __except(EXCEPTION_EXECUTE_HANDLER) { container = nullptr; }
-                if (container)
-                    cached_containers.push_back((uintptr_t)container);
-            }
+        void** elements = nullptr;
+        if (arr && count > 0) {
+            __try { elements = managed_object_array_items(arr); }
+            __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
         }
 
-        bool wrote = false;
-        for (uintptr_t ptr : cached_containers) {
-            if (clear_single_request_container_offsets((void*)ptr))
+        if (count > 64)
+            count = 64;
+
+        for (int32_t i = 0; elements && i < count; i++) {
+            void* container = nullptr;
+            __try { container = elements[i]; }
+            __except(EXCEPTION_EXECUTE_HANDLER) { container = nullptr; }
+            if (clear_single_request_container_offsets(container))
                 wrote = true;
         }
 
@@ -1907,13 +1963,21 @@ namespace unity {
         return invoke_void_vector2_rva(move, RVA_MoveComponent_SetViewRotation, write_angles);
     }
 
+    bool set_recoil_flow_disabled(bool disabled) {
+        try_init_classes();
+        if (!il2cpp::initialized)
+            return false;
+
+        return set_recoil_flow_patch_enabled(disabled);
+    }
+
     bool compensate_recoil() {
         try_init_classes();
         if (!il2cpp::initialized)
             return false;
 
         bool wrote = false;
-        if (clear_item_use_request_offsets())
+        if (set_recoil_flow_patch_enabled(true))
             wrote = true;
 
         void* move = get_local_move_component();
@@ -1948,64 +2012,6 @@ namespace unity {
                     *(Vector2*)((uintptr_t)state + 0x0) = zero_axis; // RecoilState.Recoil
                     *(Vector2*)((uintptr_t)state + 0x8) = zero_axis; // RecoilState.PreviousRecoil
                     *(int32_t*)((uintptr_t)state + 0x10) = 0;         // RecoilState.RecoilAimEffectMult
-                    wrote = true;
-                } __except(EXCEPTION_EXECUTE_HANDLER) {}
-            }
-        }
-
-        static DWORD last_recoil_producer_scan = 0;
-        static std::vector<uintptr_t> cached_recoil_producers;
-        if (scan_interval_elapsed(last_recoil_producer_scan, 100)) {
-            cached_recoil_producers.clear();
-
-            void* recoil_producer_class = get_recoil_producer_component_class();
-            int32_t count = 0;
-            void* arr = nullptr;
-            __try { arr = find_objects_of_type(recoil_producer_class, count, true); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { arr = nullptr; count = 0; }
-
-            void** elements = nullptr;
-            if (arr && count > 0) {
-                __try { elements = managed_object_array_items(arr); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
-            }
-
-            if (count > 128)
-                count = 128;
-
-            for (int32_t i = 0; elements && i < count; i++) {
-                void* producer = nullptr;
-                __try { producer = elements[i]; }
-                __except(EXCEPTION_EXECUTE_HANDLER) { producer = nullptr; }
-                if (producer)
-                    cached_recoil_producers.push_back((uintptr_t)producer);
-            }
-
-            if (patch_weapon_prototypes_from_dispersion(true, false))
-                wrote = true;
-        }
-
-        for (uintptr_t producer_ptr : cached_recoil_producers) {
-            void* producer = (void*)producer_ptr;
-            if (!producer)
-                continue;
-
-            __try {
-                *(float*)((uintptr_t)producer + 0x258) = 0.0f; // RecoilConfig.RecoilAimMultiplier
-                *(float*)((uintptr_t)producer + 0x25C) = 0.0f; // RecoilConfig.RecoilDecreaseSpeed
-                *(float*)((uintptr_t)producer + 0x260) = 0.0f; // RecoilConfig.RecoilDecreaseDelay
-                *(float*)((uintptr_t)producer + 0x278) = 0.0f; // RecoilIncreaseTimeMultiplier
-                *(float*)((uintptr_t)producer + 0x27C) = 0.0f; // RecoilScopeMult
-                *(int*)((uintptr_t)producer + 0x280) = 0;      // FireTicks
-                *(int*)((uintptr_t)producer + 0x284) = 0;      // RecoilTicks
-                *(int*)((uintptr_t)producer + 0x288) = 0;      // RecoilDecreaseDelayTicks
-                wrote = true;
-            } __except(EXCEPTION_EXECUTE_HANDLER) {}
-
-            void* producer_state = invoke_ref_return_rva(producer, RVA_RecoilProducerComponent_get_State);
-            if (producer_state) {
-                __try {
-                    memset(producer_state, 0, 0x18); // RecoilProducerComponent.RecoilState
                     wrote = true;
                 } __except(EXCEPTION_EXECUTE_HANDLER) {}
             }
