@@ -3136,7 +3136,7 @@ namespace unity {
                 pi.head_position = pos;
                 pi.head_position.y += 1.75f;
             }
-            pi.is_valid = true;
+            pi.is_valid = has_position_value(pos);
             if (mob) {
                 __try { pi.is_dead = get_player_mob_is_dead(mob); }
                 __except(EXCEPTION_EXECUTE_HANDLER) {}
@@ -3508,5 +3508,237 @@ namespace unity {
     void set_field_bool(void* obj, int32_t offset, bool value) {
         if (!obj) return;
         *(bool*)((uintptr_t)obj + offset) = value;
+    }
+
+    // === CHAMS (RVA-based + XrayPresentSystem.Present hook) ===
+
+    static const int CHAMS_XRAY = 64;
+    static const int CHAMS_GLOW = 256;
+
+    static void rva_apply_effect(void* pv, int flag) {
+        if (!pv || !il2cpp::module_base) return;
+        auto fn = (void (*)(void*, int))(il2cpp::module_base + 0x10E85A0);
+        fn(pv, flag);
+    }
+
+    static void rva_remove_effect(void* pv, int flag) {
+        if (!pv || !il2cpp::module_base) return;
+        auto fn = (void (*)(void*, int))(il2cpp::module_base + 0x10EBCB0);
+        fn(pv, flag);
+    }
+
+    // Shared chams config – written by set_chams_enabled (render thread),
+    // read by the XrayPresent hook on main Unity thread
+    static volatile bool g_chams_enabled = false;
+    static volatile bool g_chams_xray = false;
+    static volatile bool g_chams_glow = false;
+    static float g_chams_color[4] = {};
+
+    // Cached Material.set_color for xray fill material color
+    static void* g_material_set_color_method = nullptr;
+
+    // Helper: write chams color to glow config AND xray fill material
+    static void apply_chams_color(void* pv, const float color[4]) {
+        // Glow effect config color
+        __try {
+            void* glow_effect = *(void**)((uintptr_t)pv + 0x100);
+            if (glow_effect) {
+                void* glow_config = *(void**)((uintptr_t)glow_effect + 0x20);
+                if (glow_config) {
+                    float* c = (float*)((uintptr_t)glow_config + 0x10);
+                    c[0] = color[0]; c[1] = color[1];
+                    c[2] = color[2]; c[3] = color[3];
+                }
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+        // Xray fill material color
+        __try {
+            void* xray_fill = *(void**)((uintptr_t)pv + 0xF0);
+            if (xray_fill) {
+                void* fill_config = *(void**)((uintptr_t)xray_fill + 0x20);
+                if (fill_config) {
+                    void* fill_mat = *(void**)((uintptr_t)fill_config + 0x10);
+                    if (fill_mat) {
+                        if (!g_material_set_color_method) {
+                            void* mat_class = find_class_anywhere("UnityEngine", "Material");
+                            if (mat_class)
+                                g_material_set_color_method = il2cpp::class_get_method_from_name(
+                                    mat_class, "set_color", 1);
+                        }
+                        if (g_material_set_color_method) {
+                            struct Color4 { float r, g, b, a; };
+                            Color4 col = { color[0], color[1], color[2], color[3] };
+                            void* params[1] = { &col };
+                            void* exc = nullptr;
+                            il2cpp::runtime_invoke(g_material_set_color_method, fill_mat, params, &exc);
+                        }
+                    }
+                }
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    static int get_chams_team_relation(void* pv) {
+        if (!pv || !il2cpp::module_base) return 0;
+        using team_fn = int (*)(void*, void*);
+        auto fn = (team_fn)(il2cpp::module_base + 0x10EDD50);
+        return fn(pv, nullptr);
+    }
+
+    // XrayPresentSystem.Present hook (RVA 0x1145AB0)
+    static void* g_xray_trampoline_ptr = nullptr;
+    static bool g_xray_hook_installed = false;
+
+    // Called on main Unity thread from the replacement function.
+    // Applies chams only to enemies. Apply-first so configs are initialized,
+    // then write color, ensuring the value sticks.
+    static void apply_chams_from_xray_system(void* self) {
+        void* list_ptr = nullptr;
+        __try { list_ptr = *(void**)((uintptr_t)self + 0x30); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { return; }
+        if (!list_ptr) return;
+
+        int count = 0;
+        void** arr = nullptr;
+        __try {
+            arr = *(void***)((uintptr_t)list_ptr + 0x10);
+            count = *(int*)((uintptr_t)list_ptr + 0x18);
+        } __except(EXCEPTION_EXECUTE_HANDLER) { return; }
+        if (!arr || count <= 0) return;
+        if (count > 64) count = 64;
+
+        for (int i = 0; i < count; i++) {
+            void* pv = nullptr;
+            __try { pv = *(void**)((uintptr_t)arr + 0x20 + i * 8); }
+            __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
+            if (!pv) continue;
+
+            // Skip non-enemies (TeamRelation.Enemy = 2)
+            int relation = 0;
+            __try { relation = get_chams_team_relation(pv); }
+            __except(EXCEPTION_EXECUTE_HANDLER) { relation = 0; }
+            if (relation != 2) continue;
+
+            __try { rva_remove_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            __try { rva_remove_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+            if (!g_chams_enabled) continue;
+
+            if (g_chams_glow) {
+                // Apply glow first so config is initialized, then write color
+                __try { rva_apply_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                __try { apply_chams_color(pv, g_chams_color); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            }
+            if (g_chams_xray) {
+                __try { rva_apply_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
+    }
+
+    // Replacement for XrayPresentSystem.Present
+    // Original: protected override void Present(in RunnerState, AsyncMsgBus)
+    void xray_present_replacement(void* self, void* runnerState, void* bus) {
+        if (g_xray_trampoline_ptr) {
+            ((void (*)(void*, void*, void*))g_xray_trampoline_ptr)(self, runnerState, bus);
+        }
+        apply_chams_from_xray_system(self);
+    }
+
+    static void xray_hook_install() {
+        if (g_xray_hook_installed) return;
+        if (!il2cpp::module_base) return;
+
+        void* target = (void*)(il2cpp::module_base + 0x1145AB0);
+        if (!target) return;
+        if (il2cpp::module_size && 0x1145AB0 + 14 > il2cpp::module_size) return;
+
+        // Allocate executable trampoline
+        void* tramp = VirtualAlloc(nullptr, 256, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        if (!tramp) return;
+
+        // 14-byte indirect JMP: FF 25 00 00 00 00 + 8-byte target
+        // Trampoline: [14 orig bytes] + [14-byte JMP to target+14]
+        memcpy(tramp, target, 14);
+        uint8_t* t = (uint8_t*)tramp;
+        t[14] = 0xFF; t[15] = 0x25;
+        t[16] = 0; t[17] = 0; t[18] = 0; t[19] = 0;
+        *(void**)(t + 20) = (uint8_t*)target + 14;
+
+        g_xray_trampoline_ptr = tramp;
+
+        // JMP at target: FF 25 00 00 00 00 + 8-byte -> replacement
+        uint8_t jmp_code[14];
+        jmp_code[0] = 0xFF; jmp_code[1] = 0x25;
+        jmp_code[2] = 0; jmp_code[3] = 0; jmp_code[4] = 0; jmp_code[5] = 0;
+        *(void**)(jmp_code + 6) = &xray_present_replacement;
+
+        DWORD old = 0;
+        if (VirtualProtect(target, 14, PAGE_EXECUTE_READWRITE, &old)) {
+            memcpy(target, jmp_code, 14);
+            VirtualProtect(target, 14, old, &old);
+            g_xray_hook_installed = true;
+            printf("[unity] XrayPresentSystem.Present hook installed\n");
+        }
+    }
+
+    void set_chams_enabled(bool enabled, bool xray, bool glow, const float color[4]) {
+        // Write config for the hook (reads these on main thread)
+        g_chams_enabled = enabled;
+        g_chams_xray = xray;
+        g_chams_glow = glow;
+        if (color) {
+            g_chams_color[0] = color[0];
+            g_chams_color[1] = color[1];
+            g_chams_color[2] = color[2];
+            g_chams_color[3] = color[3];
+        }
+
+        // Install hook on first toggle
+        xray_hook_install();
+
+        // Immediate apply from this thread as fallback (one-shot)
+        try_init_classes();
+        if (!il2cpp::initialized || !enabled) return;
+
+        void* pv_class = find_class_anywhere("Psa.Core.Modules.Player.Components.Implementation", "PlayerVisuals");
+        if (!pv_class) return;
+
+        int32_t count = 0;
+        void* arr = nullptr;
+        __try { arr = find_objects_of_type(pv_class, count, true); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { return; }
+        if (!arr || count <= 0) return;
+
+        void** elements = nullptr;
+        __try { elements = managed_object_array_items(arr); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { return; }
+        if (!elements) return;
+        if (count > 64) count = 64;
+
+        for (int32_t i = 0; i < count; i++) {
+            void* pv = nullptr;
+            __try { pv = elements[i]; }
+            __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
+            if (!pv) continue;
+
+            // Skip non-enemies (TeamRelation.Enemy = 2)
+            int relation = 0;
+            __try { relation = get_chams_team_relation(pv); }
+            __except(EXCEPTION_EXECUTE_HANDLER) { relation = 0; }
+            if (relation != 2) continue;
+
+            __try { rva_remove_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            __try { rva_remove_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+            if (glow) {
+                // Apply glow first so config is initialized, then write color
+                __try { rva_apply_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                __try { apply_chams_color(pv, color ? color : g_chams_color); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            }
+            if (xray) {
+                __try { rva_apply_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
     }
 }

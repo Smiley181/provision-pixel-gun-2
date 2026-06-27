@@ -109,6 +109,7 @@ namespace unity {
     void* get_transform(void* obj);
     Vector3 get_transform_position(void* transform);
     void* get_component(void* obj, const char* image_name, const char* namesp, const char* class_name);
+    void set_chams_enabled(bool enabled, bool xray, bool glow, const float color[4]);
 
     float get_field_float(void* obj, int32_t offset);
     bool get_field_bool(void* obj, int32_t offset);

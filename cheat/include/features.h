@@ -11,8 +11,12 @@ struct ESPConfig {
     bool show_lines = false;
     bool show_teammates = false;
     bool show_grenades = false;
+    bool show_chams = false;
+    bool chams_xray = true;
+    bool chams_glow = true;
     float glow_color[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
     float teammate_color[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+    float chams_color[4] = { 1.0f, 0.0f, 0.0f, 0.6f };
     float esp_distance = 200.0f;
 };
 
@@ -47,6 +51,7 @@ extern MenuConfig menu_config;
 
 namespace features {
     void update_players();
+    void run_chams();
     void run_aimbot();
     void render_esp(ImDrawList* draw_list);
     void render_crosshair(ImDrawList* draw_list);

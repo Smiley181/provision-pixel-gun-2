@@ -92,6 +92,7 @@ namespace renderer {
             ImGui::NewFrame();
 
             features::update_players();
+            features::run_chams();
             features::run_aimbot();
 
             ImDrawList* draw_list = ImGui::GetBackgroundDrawList();

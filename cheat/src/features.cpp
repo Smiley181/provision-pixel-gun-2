@@ -143,7 +143,7 @@ namespace features {
             } __except(EXCEPTION_EXECUTE_HANDLER) {}
         }
 
-        DWORD scan_interval = g_players.empty() ? 1000 : 2000;
+        DWORD scan_interval = 1000;
         if (now - last_scan < scan_interval)
             return;
 
@@ -164,6 +164,42 @@ namespace features {
                 last_exception_log = now;
                 printf("[features] Exception in update_players, using cached players: %zu\n", g_players.size());
             }
+        }
+    }
+
+    void run_chams() {
+        static bool prev_enabled = false;
+        static bool prev_xray = false;
+        static bool prev_glow = false;
+        static float prev_color[4] = {};
+
+        bool changed = prev_enabled != esp_config.show_chams ||
+            prev_xray != esp_config.chams_xray ||
+            prev_glow != esp_config.chams_glow ||
+            prev_color[0] != esp_config.chams_color[0] ||
+            prev_color[1] != esp_config.chams_color[1] ||
+            prev_color[2] != esp_config.chams_color[2] ||
+            prev_color[3] != esp_config.chams_color[3];
+
+        if (!changed) return;
+
+        prev_enabled = esp_config.show_chams;
+        prev_xray = esp_config.chams_xray;
+        prev_glow = esp_config.chams_glow;
+        prev_color[0] = esp_config.chams_color[0];
+        prev_color[1] = esp_config.chams_color[1];
+        prev_color[2] = esp_config.chams_color[2];
+        prev_color[3] = esp_config.chams_color[3];
+
+        bool unity_ready = unity::is_ready();
+        if (!unity_ready) return;
+
+        if (esp_config.show_chams) {
+            __try { unity::set_chams_enabled(true, esp_config.chams_xray, esp_config.chams_glow, esp_config.chams_color); }
+            __except(EXCEPTION_EXECUTE_HANDLER) {}
+        } else {
+            __try { unity::set_chams_enabled(false, false, false, nullptr); }
+            __except(EXCEPTION_EXECUTE_HANDLER) {}
         }
     }
 
