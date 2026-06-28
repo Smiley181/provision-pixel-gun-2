@@ -90,6 +90,7 @@ namespace unity {
 
     bool world_to_screen(const Vector3& world, Vector2& screen, const Matrix4x4& view, const Matrix4x4& proj);
     bool world_to_screen(const Vector3& world, Vector2& screen);
+    bool world_to_screen(const Vector3& world, Vector2& screen, void* camera);
 
     std::vector<PlayerInfo> get_players();
     std::vector<PlayerInfo> get_cached_players();
@@ -99,11 +100,7 @@ namespace unity {
     Vector3 get_camera_position(void* camera);
     Vector3 get_object_position(void* transform);
     Vector3 get_bone_position(void* transform);
-    bool aim_at_world(const Vector3& target, float smooth);
-    bool set_recoil_flow_disabled(bool disabled);
-    bool set_no_spread_disabled(bool disabled);
-    bool compensate_recoil();
-    bool remove_spread();
+    bool aim_at_world(const Vector3& target, float smooth, bool recoil_compensation = false);
 
     void* find_object_of_type(const char* image_name, const char* namesp, const char* class_name);
     void* get_transform(void* obj);

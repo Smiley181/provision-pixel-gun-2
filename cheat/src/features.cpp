@@ -6,7 +6,6 @@
 
 ESPConfig esp_config;
 AimbotConfig aimbot_config;
-MiscConfig misc_config;
 MenuConfig menu_config;
 
 namespace features {
@@ -14,8 +13,6 @@ namespace features {
     static std::vector<WorldObjectInfo> g_grenades;
     static bool g_aim_last_success = false;
     static bool g_aim_hold_active = false;
-    static bool g_recoil_last_success = false;
-    static bool g_spread_last_success = false;
 
     struct Vec2 { float x, y; };
     struct EspSmoothState {
@@ -100,16 +97,16 @@ namespace features {
         float foot_dy = foot.y - state->foot.y;
         float head_dx = head.x - state->head.x;
         float head_dy = head.y - state->head.y;
-        bool snap = elapsed > 250 ||
-            (foot_dx * foot_dx + foot_dy * foot_dy) > 62500.0f ||
-            (head_dx * head_dx + head_dy * head_dy) > 62500.0f;
+        bool snap = elapsed > 200 ||
+            (foot_dx * foot_dx + foot_dy * foot_dy) > 40000.0f ||
+            (head_dx * head_dx + head_dy * head_dy) > 40000.0f;
 
         if (!state->initialized || snap) {
             state->foot = foot;
             state->head = head;
             state->initialized = true;
         } else {
-            float alpha = clamp_float((float)elapsed / 45.0f, 0.35f, 1.0f);
+            float alpha = clamp_float((float)elapsed / 25.0f, 0.55f, 1.0f);
             state->foot.x += (foot.x - state->foot.x) * alpha;
             state->foot.y += (foot.y - state->foot.y) * alpha;
             state->head.x += (head.x - state->head.x) * alpha;
@@ -133,36 +130,65 @@ namespace features {
     void update_players() {
         static DWORD last_scan = 0;
         static DWORD last_refresh = 0;
+        static DWORD scan_interval = 500;
+        static int empty_scan_count = 0;
         DWORD now = GetTickCount();
 
         if (!g_players.empty() && now - last_refresh >= 33) {
             last_refresh = now;
             __try {
                 auto refreshed = unity::refresh_cached_players();
-                g_players = refreshed;
+                for (auto& rp : refreshed) {
+                    bool found = false;
+                    for (auto& gp : g_players) {
+                        if ((rp.object_ptr && gp.object_ptr == rp.object_ptr) ||
+                            (rp.avatar_ptr && gp.avatar_ptr == rp.avatar_ptr)) {
+                            gp.position = rp.position;
+                            gp.head_position = rp.head_position;
+                            gp.health = rp.health;
+                            gp.max_health = rp.max_health;
+                            gp.is_dead = rp.is_dead;
+                            gp.is_valid = rp.is_valid;
+                            gp.team_known = rp.team_known;
+                            gp.is_teammate = rp.is_teammate;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found)
+                        g_players.push_back(rp);
+                }
             } __except(EXCEPTION_EXECUTE_HANDLER) {}
         }
 
-        DWORD scan_interval = 1000;
         if (now - last_scan < scan_interval)
             return;
 
         last_scan = now;
         __try {
             auto scanned = unity::get_players();
-            if (!scanned.empty())
+            if (!scanned.empty()) {
                 g_players = scanned;
-            else if (g_players.empty())
-                g_players.clear();
+                empty_scan_count = 0;
+                scan_interval = 500;
+            } else {
+                if (g_players.empty())
+                    g_players.clear();
+                empty_scan_count++;
+                scan_interval = empty_scan_count >= 3 ? 2000 : (empty_scan_count == 2 ? 1500 : (empty_scan_count == 1 ? 1000 : 500));
+            }
         } __except(EXCEPTION_EXECUTE_HANDLER) {
             auto cached = unity::get_cached_players();
             if (!cached.empty())
                 g_players = cached;
 
+            empty_scan_count++;
+            scan_interval = empty_scan_count >= 3 ? 2000 : (empty_scan_count == 2 ? 1500 : (empty_scan_count == 1 ? 1000 : 500));
+
             static DWORD last_exception_log = 0;
             if (now - last_exception_log > 2000) {
                 last_exception_log = now;
-                printf("[features] Exception in update_players, using cached players: %zu\n", g_players.size());
+                printf("[features] Exception in update_players (%d), using cached: %zu\n", empty_scan_count, g_players.size());
             }
         }
     }
@@ -206,23 +232,6 @@ namespace features {
     void run_aimbot() {
         g_aim_last_success = false;
         g_aim_hold_active = false;
-        g_recoil_last_success = false;
-        g_spread_last_success = false;
-
-        bool unity_ready = unity::is_ready();
-        __try { unity::set_recoil_flow_disabled(aimbot_config.recoil_compensation && unity_ready); }
-        __except(EXCEPTION_EXECUTE_HANDLER) {}
-        __try { unity::set_no_spread_disabled(misc_config.no_spread && unity_ready); }
-        __except(EXCEPTION_EXECUTE_HANDLER) {}
-
-        if (aimbot_config.recoil_compensation && unity_ready) {
-            __try { g_recoil_last_success = unity::compensate_recoil(); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { g_recoil_last_success = false; }
-        }
-        if (misc_config.no_spread && unity_ready) {
-            __try { g_spread_last_success = unity::remove_spread(); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { g_spread_last_success = false; }
-        }
 
         if (!aimbot_config.enabled) {
             return;
@@ -274,7 +283,7 @@ namespace features {
 
             Vector2 screen;
             __try {
-                if (!unity::world_to_screen(target, screen))
+                if (!unity::world_to_screen(target, screen, cam))
                     continue;
             } __except(EXCEPTION_EXECUTE_HANDLER) {
                 continue;
@@ -290,7 +299,7 @@ namespace features {
 
         if (found_target) {
             bool aim_ok = false;
-            __try { aim_ok = unity::aim_at_world(best_target, aimbot_config.smooth); }
+            __try { aim_ok = unity::aim_at_world(best_target, aimbot_config.smooth, aimbot_config.recoil_compensation); }
             __except(EXCEPTION_EXECUTE_HANDLER) {}
             g_aim_last_success = aim_ok;
         }
@@ -338,13 +347,11 @@ namespace features {
         if (cam) { __try { cpos = unity::get_camera_position(cam); } __except(EXCEPTION_EXECUTE_HANDLER) {} }
 
         snprintf(debug_buf, sizeof(debug_buf),
-            "CHEAT|C34 P:%d/%zu Cam:%s R:%s AH:%s A:%s RC:%s NS:%s G:%d/%zu"
+            "CHEAT|C34 P:%d/%zu Cam:%s R:%s AH:%s A:%s G:%d/%zu"
             " VM:%s PM:%s WM:%s",
             player_count, g_players.size(), camera_ok ? "Y" : "N", unity_ready ? "Y" : "N",
             g_aim_hold_active ? "Y" : "N",
             g_aim_last_success ? "Y" : "N",
-            g_recoil_last_success ? "Y" : "N",
-            g_spread_last_success ? "Y" : "N",
             grenade_count, g_grenades.size(),
             vm ? "Y" : "N", pm ? "Y" : "N", wm ? "Y" : "N");
 
@@ -363,11 +370,12 @@ namespace features {
         int sh = rect.bottom - rect.top;
 
         static DWORD last_grenade_scan = 0;
-        if (esp_config.show_grenades) {
-            if (now - last_grenade_scan > 250) {
+        static DWORD grenade_cooldown = 250;
+        if (esp_config.show_grenades && !g_players.empty()) {
+            if (now - last_grenade_scan > grenade_cooldown) {
                 last_grenade_scan = now;
-                __try { g_grenades = unity::get_grenades(); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { g_grenades.clear(); }
+                __try { g_grenades = unity::get_grenades(); grenade_cooldown = 250; }
+                __except(EXCEPTION_EXECUTE_HANDLER) { g_grenades.clear(); grenade_cooldown = 1000; }
             }
         } else if (!g_grenades.empty()) {
             g_grenades.clear();
@@ -390,7 +398,7 @@ namespace features {
             Vector3 head_world = player.head_position;
             if (!is_reasonable_world_point(head_world)) {
                 head_world = player.position;
-                head_world.y += 2.5f;
+                head_world.y += 1.7f;
             }
             if (!is_reasonable_world_point(head_world))
                 continue;

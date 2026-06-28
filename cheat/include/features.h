@@ -20,15 +20,6 @@ struct ESPConfig {
     float esp_distance = 200.0f;
 };
 
-struct MiscConfig {
-    bool rapid_fire = false;
-    bool no_spread = false;
-    bool infinite_ammo = false;
-    bool no_fall_damage = false;
-    bool speed_hack = false;
-    float speed_multiplier = 2.0f;
-};
-
 struct AimbotConfig {
     bool enabled = true;
     bool aim_on_mouse5_hold = true;
@@ -46,7 +37,6 @@ struct MenuConfig {
 
 extern ESPConfig esp_config;
 extern AimbotConfig aimbot_config;
-extern MiscConfig misc_config;
 extern MenuConfig menu_config;
 
 namespace features {

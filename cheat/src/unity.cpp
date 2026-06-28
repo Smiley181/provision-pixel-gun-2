@@ -121,10 +121,6 @@ namespace unity {
     static void* g_move_component_class = nullptr;
     static void* g_game_mode_class = nullptr;
     static void* g_scene_camera_class = nullptr;
-    static void* g_recoil_producer_component_class = nullptr;
-    static void* g_spread_use_component_class = nullptr;
-    static void* g_dispersion_component_class = nullptr;
-    static void* g_item_use_request_container_class = nullptr;
     static void* g_kinematic_projectile_view_class = nullptr;
     static void* g_cached_get_camera_position_method = nullptr;
     static void* g_cached_get_first_person_camera_method = nullptr;
@@ -178,51 +174,7 @@ namespace unity {
     static constexpr uintptr_t RVA_AvatarHpBar_get_IsDead = 0xFB3690;
     static constexpr uintptr_t RVA_MoveComponent_get_ViewRotation = 0x1156DD0;
     static constexpr uintptr_t RVA_MoveComponent_SetViewRotation = 0x11556B0;
-    static constexpr uintptr_t RVA_MoveComponent_SetRecoilView = 0x11556A0;
-    static constexpr uintptr_t RVA_RecoilComponent_get_State = 0x1007970;
-    static constexpr uintptr_t RVA_RecoilComponent_GetRecoilAimEffectMultiplier = 0x1007700;
-    static constexpr uintptr_t RVA_RecoilComponent_GetRecoilAxis = 0x1007840;
-    static constexpr uintptr_t RVA_RecoilComponent_SetRecoilAxis = 0x10078F0;
-    static constexpr uintptr_t RVA_RecoilProducerComponent_get_State = 0x1007E70;
-    static constexpr uintptr_t RVA_SpreadUseComponent_get_State = 0x10088B0;
-    static constexpr uintptr_t RVA_DispersionComponent_get_State = 0xFFCC30;
-    static constexpr uintptr_t RVA_LoadoutComponent_get_CurrentItem = 0x113CD00;
-    static constexpr uintptr_t RVA_DispersionApplySystem_Tick = 0x101C840;
-    static constexpr uintptr_t RVA_ItemUseSystem_IncreaseDispersion = 0x10218F0;
-    static constexpr uintptr_t RVA_SpreadApplySystem_Tick = 0x102D3D0;
-    static constexpr uintptr_t RVA_SpreadApplySystem_ApplySpread = 0x102D080;
     static constexpr uintptr_t RVA_ProjectileViewBase_Kinematic_get_IsFinished = 0xBBCEA0;
-    static constexpr uintptr_t RVA_RecoilSystem_ContinueRecoilFlow = 0x1029DF0;
-    static constexpr uintptr_t RVA_RecoilSystem_StartRecoilFlow = 0x102AAD0;
-    static constexpr uintptr_t RVA_RecoilSystem_IncreaseRecoil = 0x102A540;
-
-    struct RuntimePatch {
-        uintptr_t rva;
-        uint8_t patch[8];
-        size_t len;
-        uint8_t original[8];
-        bool original_valid;
-        bool applied;
-    };
-
-    static RuntimePatch g_recoil_flow_patches[] = {
-        { RVA_RecoilSystem_ContinueRecoilFlow, { 0x31, 0xC0, 0xC3 }, 3, {}, false, false },
-        { RVA_RecoilSystem_StartRecoilFlow,    { 0x31, 0xC0, 0xC3 }, 3, {}, false, false },
-        { RVA_RecoilSystem_IncreaseRecoil,     { 0x31, 0xC0, 0xC3 }, 3, {}, false, false },
-    };
-
-    static RuntimePatch g_recoil_camera_patches[] = {
-        { RVA_RecoilComponent_GetRecoilAxis,                { 0x31, 0xC0, 0x0F, 0x57, 0xC0, 0xC3 }, 6, {}, false, false },
-        { RVA_RecoilComponent_GetRecoilAimEffectMultiplier, { 0x31, 0xC0, 0x0F, 0x57, 0xC0, 0xC3 }, 6, {}, false, false },
-        { RVA_RecoilSystem_IncreaseRecoil,                  { 0x31, 0xC0, 0xC3 }, 3, {}, false, false },
-    };
-
-    static RuntimePatch g_no_spread_patches[] = {
-        { RVA_DispersionApplySystem_Tick,       { 0xC3 }, 1, {}, false, false },
-        { RVA_ItemUseSystem_IncreaseDispersion, { 0xC3 }, 1, {}, false, false },
-        { RVA_SpreadApplySystem_Tick,           { 0xC3 }, 1, {}, false, false },
-        { RVA_SpreadApplySystem_ApplySpread,    { 0xC3 }, 1, {}, false, false },
-    };
 
     int get_debug_player_count() { return g_player_count; }
     bool get_debug_camera_found() { return g_camera_found; }
@@ -844,178 +796,6 @@ namespace unity {
         return true;
     }
 
-    static bool invoke_void_vector2_float_rva(void* obj, uintptr_t rva, const Vector2& value, float factor) {
-        if (!obj || !il2cpp::module_base || !rva || (il2cpp::module_size && rva >= il2cpp::module_size))
-            return false;
-
-        using fn_t = void (*)(void*, Vector2, float, void*);
-        __try {
-            auto fn = (fn_t)(il2cpp::module_base + rva);
-            fn(obj, value, factor, nullptr);
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            return false;
-        }
-        return true;
-    }
-
-    static bool write_runtime_patch(RuntimePatch& patch, bool apply) {
-        if (!il2cpp::module_base || !patch.rva || !patch.len || patch.len > sizeof(patch.patch))
-            return false;
-        if (il2cpp::module_size && patch.rva + patch.len > il2cpp::module_size)
-            return false;
-
-        uint8_t* address = (uint8_t*)(il2cpp::module_base + patch.rva);
-        const uint8_t* bytes = apply ? patch.patch : patch.original;
-        if (!apply && !patch.original_valid)
-            return true;
-        if (patch.applied == apply)
-            return true;
-
-        DWORD old_protect = 0;
-        bool ok = false;
-        __try {
-            if (VirtualProtect(address, patch.len, PAGE_EXECUTE_READWRITE, &old_protect)) {
-                if (apply && !patch.original_valid) {
-                    memcpy(patch.original, address, patch.len);
-                    patch.original_valid = true;
-                }
-
-                memcpy(address, bytes, patch.len);
-                FlushInstructionCache(GetCurrentProcess(), address, patch.len);
-
-                DWORD ignored = 0;
-                VirtualProtect(address, patch.len, old_protect, &ignored);
-                patch.applied = apply;
-                ok = true;
-            }
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            ok = false;
-        }
-
-        return ok;
-    }
-
-    static bool set_recoil_flow_patch_enabled(bool enabled) {
-        bool ok = true;
-        for (auto& patch : g_recoil_flow_patches) {
-            if (!write_runtime_patch(patch, enabled))
-                ok = false;
-        }
-        return ok;
-    }
-
-    static bool set_recoil_camera_patch_enabled(bool enabled) {
-        bool ok = true;
-        for (auto& patch : g_recoil_camera_patches) {
-            if (!write_runtime_patch(patch, enabled))
-                ok = false;
-        }
-        return ok;
-    }
-
-    static bool set_no_spread_patch_enabled(bool enabled) {
-        bool ok = true;
-        for (auto& patch : g_no_spread_patches) {
-            if (!write_runtime_patch(patch, enabled))
-                ok = false;
-        }
-        return ok;
-    }
-
-    static bool patch_weapon_prototype_ballistics(void* weapon_prototype, bool patch_recoil, bool patch_spread) {
-        if (!weapon_prototype)
-            return false;
-
-        bool wrote = false;
-
-        void* scatter_aspect = nullptr;
-        __try { scatter_aspect = *(void**)((uintptr_t)weapon_prototype + 0x70); } // WeaponPrototype._aspectWeaponScatter
-        __except(EXCEPTION_EXECUTE_HANDLER) { scatter_aspect = nullptr; }
-
-        if (scatter_aspect) {
-            void* scatter_proto = nullptr;
-            __try { scatter_proto = *(void**)((uintptr_t)scatter_aspect + 0x10); } // AspectBase<WeaponScatter>._protoData
-            __except(EXCEPTION_EXECUTE_HANDLER) { scatter_proto = nullptr; }
-
-            if (scatter_proto) {
-                __try {
-                    int32_t* has_bits = (int32_t*)((uintptr_t)scatter_proto + 0x18);
-                    if (patch_spread) {
-                        constexpr int32_t spread_mask =
-                            (1 << 3) |  // minDespersion_
-                            (1 << 4) |  // maxDispersion_
-                            (1 << 5) |  // minFireDispersion_
-                            (1 << 6) |  // maxFireDispersion_
-                            (1 << 7) |  // dispersionIncFirstShot_
-                            (1 << 8) |  // dispersionIncPerShot_
-                            (1 << 11) | // runDispersionMult_
-                            (1 << 12) | // airDispersionMult_
-                            (1 << 13) | // aimDispersionMult_
-                            (1 << 21);  // maxScatterMult_
-
-                        *has_bits |= spread_mask;
-                        *(float*)((uintptr_t)scatter_proto + 0x28) = 0.0f; // minDespersion_
-                        *(float*)((uintptr_t)scatter_proto + 0x2C) = 0.0f; // maxDispersion_
-                        *(float*)((uintptr_t)scatter_proto + 0x30) = 0.0f; // minFireDispersion_
-                        *(float*)((uintptr_t)scatter_proto + 0x34) = 0.0f; // maxFireDispersion_
-                        *(float*)((uintptr_t)scatter_proto + 0x38) = 0.0f; // dispersionIncFirstShot_
-                        *(float*)((uintptr_t)scatter_proto + 0x3C) = 0.0f; // dispersionIncPerShot_
-                        *(float*)((uintptr_t)scatter_proto + 0x48) = 0.0f; // runDispersionMult_
-                        *(float*)((uintptr_t)scatter_proto + 0x4C) = 0.0f; // airDispersionMult_
-                        *(float*)((uintptr_t)scatter_proto + 0x50) = 0.0f; // aimDispersionMult_
-                        *(float*)((uintptr_t)scatter_proto + 0x70) = 0.0f; // maxScatterMult_
-                        wrote = true;
-                    }
-
-                    if (patch_recoil) {
-                        constexpr int32_t recoil_mask =
-                            (1 << 14) | // recoilPatternId_
-                            (1 << 15) | // recoilAimMult_
-                            (1 << 16) | // recoilDecreaseMult_
-                            (1 << 17) | // recoilMaxAngleX_
-                            (1 << 18) | // recoilMaxAngleY_
-                            (1 << 19) | // weaponRecoilShotCoeff_
-                            (1 << 20) | // weaponRecoilEndSpeed_
-                            (1 << 22);  // recoilScopeMult_
-
-                        *has_bits |= recoil_mask;
-                        *(int32_t*)((uintptr_t)scatter_proto + 0x54) = 0;  // recoilPatternId_
-                        *(float*)((uintptr_t)scatter_proto + 0x58) = 0.0f; // recoilAimMult_
-                        *(float*)((uintptr_t)scatter_proto + 0x5C) = 0.0f; // recoilDecreaseMult_
-                        *(float*)((uintptr_t)scatter_proto + 0x60) = 0.0f; // recoilMaxAngleX_
-                        *(float*)((uintptr_t)scatter_proto + 0x64) = 0.0f; // recoilMaxAngleY_
-                        *(float*)((uintptr_t)scatter_proto + 0x68) = 0.0f; // weaponRecoilShotCoeff_
-                        *(float*)((uintptr_t)scatter_proto + 0x6C) = 0.0f; // weaponRecoilEndSpeed_
-                        *(float*)((uintptr_t)scatter_proto + 0x74) = 0.0f; // recoilScopeMult_
-                        wrote = true;
-                    }
-                } __except(EXCEPTION_EXECUTE_HANDLER) {}
-            }
-        }
-
-        if (patch_spread) {
-            void* spread_aspect = nullptr;
-            __try { spread_aspect = *(void**)((uintptr_t)weapon_prototype + 0x98); } // WeaponPrototype._aspectItemAttackSpread
-            __except(EXCEPTION_EXECUTE_HANDLER) { spread_aspect = nullptr; }
-
-            if (spread_aspect) {
-                void* spread_proto = nullptr;
-                __try { spread_proto = *(void**)((uintptr_t)spread_aspect + 0x10); } // AspectBase<ItemAttackSpread>._protoData
-                __except(EXCEPTION_EXECUTE_HANDLER) { spread_proto = nullptr; }
-
-                if (spread_proto) {
-                    __try {
-                        *(int32_t*)((uintptr_t)spread_proto + 0x18) |= (1 << 1); // spreadAngle_ is present
-                        *(float*)((uintptr_t)spread_proto + 0x20) = 0.0f;        // spreadAngle_
-                        wrote = true;
-                    } __except(EXCEPTION_EXECUTE_HANDLER) {}
-                }
-            }
-        }
-
-        return wrote;
-    }
-
     static int invoke_int_method(void* obj, void* method) {
         if (!method) return 0;
 
@@ -1087,15 +867,6 @@ namespace unity {
         return g_player_mob_class;
     }
 
-    static void* get_move_component_class() {
-        if (!g_move_component_class) {
-            g_move_component_class = find_class_anywhere(
-                "Psa.Core.Modules.Movements.Services.Components.Implementation",
-                "MoveComponent");
-        }
-        return g_move_component_class;
-    }
-
     static void* get_game_mode_class() {
         if (!g_game_mode_class) {
             g_game_mode_class = find_class_anywhere(
@@ -1112,162 +883,6 @@ namespace unity {
                 "SceneCamera");
         }
         return g_scene_camera_class;
-    }
-
-    static void* get_recoil_producer_component_class() {
-        if (!g_recoil_producer_component_class) {
-            g_recoil_producer_component_class = find_class_anywhere(
-                "Psa.Core.Modules.Shooting.Weapons.Components",
-                "RecoilProducerComponent");
-        }
-        return g_recoil_producer_component_class;
-    }
-
-    static void* get_spread_use_component_class() {
-        if (!g_spread_use_component_class) {
-            g_spread_use_component_class = find_class_anywhere(
-                "Psa.Core.Modules.Shooting.Weapons.Components",
-                "SpreadUseComponent");
-        }
-        return g_spread_use_component_class;
-    }
-
-    static void* get_dispersion_component_class() {
-        if (!g_dispersion_component_class) {
-            g_dispersion_component_class = find_class_anywhere(
-                "Psa.Core.Modules.Shooting.Weapons.Components",
-                "DispersionComponent");
-        }
-        return g_dispersion_component_class;
-    }
-
-    static void* get_item_use_request_container_class() {
-        if (!g_item_use_request_container_class) {
-            g_item_use_request_container_class = find_class_anywhere(
-                "Psa.Core.Modules.Shooting.Weapons.Components",
-                "ItemUseRequestContainerComponent");
-        }
-        return g_item_use_request_container_class;
-    }
-
-    static void* get_kinematic_projectile_view_class() {
-        if (!g_kinematic_projectile_view_class) {
-            g_kinematic_projectile_view_class = find_class_anywhere(
-                "Psa.Core.Modules.Shooting.Projectiles.Kinematic.Views",
-                "KinematicProjectileView");
-        }
-        return g_kinematic_projectile_view_class;
-    }
-
-    static bool patch_weapon_prototypes_from_dispersion(bool patch_recoil, bool patch_spread) {
-        void* dispersion_class = get_dispersion_component_class();
-        int32_t count = 0;
-        void* arr = nullptr;
-        __try { arr = find_objects_of_type(dispersion_class, count, true); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { arr = nullptr; count = 0; }
-
-        void** elements = nullptr;
-        if (arr && count > 0) {
-            __try { elements = managed_object_array_items(arr); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
-        }
-        if (count > 64)
-            count = 64;
-
-        bool wrote = false;
-        for (int32_t i = 0; elements && i < count; i++) {
-            void* dispersion = nullptr;
-            __try { dispersion = elements[i]; }
-            __except(EXCEPTION_EXECUTE_HANDLER) { dispersion = nullptr; }
-            if (!dispersion)
-                continue;
-
-            void* weapon_prototype = nullptr;
-            __try { weapon_prototype = *(void**)((uintptr_t)dispersion + 0x260); } // DispersionComponent.WeaponPrototype
-            __except(EXCEPTION_EXECUTE_HANDLER) { weapon_prototype = nullptr; }
-
-            if (patch_weapon_prototype_ballistics(weapon_prototype, patch_recoil, patch_spread))
-                wrote = true;
-        }
-
-        return wrote;
-    }
-
-    static bool clear_single_request_container_offsets(void* container) {
-        if (!container)
-            return false;
-
-        Vector3 zero = {};
-        bool wrote = false;
-
-        __try {
-            *(Vector3*)((uintptr_t)container + 0x248) = zero; // ItemUseRequestContainerComponent.DirectionOffset
-            wrote = true;
-        } __except(EXCEPTION_EXECUTE_HANDLER) {}
-
-        void* requests = nullptr;
-        __try { requests = *(void**)((uintptr_t)container + 0x240); } // ItemUseRequestContainerComponent.Requests
-        __except(EXCEPTION_EXECUTE_HANDLER) { requests = nullptr; }
-        if (!requests)
-            return wrote;
-
-        void* items = nullptr;
-        int32_t size = 0;
-        __try {
-            items = *(void**)((uintptr_t)requests + 0x10); // List<ItemUseRequest>._items
-            size = *(int32_t*)((uintptr_t)requests + 0x18); // List<ItemUseRequest>._size
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            items = nullptr;
-            size = 0;
-        }
-
-        int32_t length = managed_array_length_safe(items);
-        if (size > length)
-            size = length;
-        if (size > 16)
-            size = 16;
-
-        for (int32_t i = 0; items && i < size; i++) {
-            uint8_t* request = (uint8_t*)items + 0x20 + ((uintptr_t)i * 0x68); // sizeof(ItemUseRequest)
-            __try {
-                *(Vector3*)(request + 0x18) = zero; // ItemUseRequest.ModifierDirection
-                wrote = true;
-            } __except(EXCEPTION_EXECUTE_HANDLER) {}
-        }
-
-        return wrote;
-    }
-
-    static bool clear_item_use_request_offsets() {
-        static DWORD last_scan = 0;
-        bool wrote = false;
-        if (!scan_interval_elapsed(last_scan, 150))
-            return wrote;
-
-        void* container_class = get_item_use_request_container_class();
-        int32_t count = 0;
-        void* arr = nullptr;
-        __try { arr = find_objects_of_type(container_class, count, false); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { arr = nullptr; count = 0; }
-
-        void** elements = nullptr;
-        if (arr && count > 0) {
-            __try { elements = managed_object_array_items(arr); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
-        }
-
-        if (count > 64)
-            count = 64;
-
-        for (int32_t i = 0; elements && i < count; i++) {
-            void* container = nullptr;
-            __try { container = elements[i]; }
-            __except(EXCEPTION_EXECUTE_HANDLER) { container = nullptr; }
-            if (clear_single_request_container_offsets(container))
-                wrote = true;
-        }
-
-        return wrote;
     }
 
     static void* get_player_avatar_from_pno(void* pno) {
@@ -1322,144 +937,6 @@ namespace unity {
 
     static void* get_local_move_component() {
         return get_move_component_from_avatar(g_local_player_avatar);
-    }
-
-    static void* get_local_loadout_component() {
-        void* avatar = g_local_player_avatar;
-        if (!avatar)
-            return nullptr;
-
-        void* loadout = nullptr;
-        __try { loadout = *(void**)((uintptr_t)avatar + 0x768); } // PlayerMob.<LoadoutComponent>k__BackingField
-        __except(EXCEPTION_EXECUTE_HANDLER) { loadout = nullptr; }
-        return loadout;
-    }
-
-    static void* get_current_loadout_item() {
-        void* loadout = get_local_loadout_component();
-        if (!loadout)
-            return nullptr;
-
-        return invoke_ref_return_rva(loadout, RVA_LoadoutComponent_get_CurrentItem);
-    }
-
-    static bool clear_recoil_component_camera_state(void* recoil) {
-        if (!recoil)
-            return false;
-
-        Vector2 zero_axis = {};
-        bool wrote = false;
-
-        if (invoke_void_vector2_rva(recoil, RVA_RecoilComponent_SetRecoilAxis, zero_axis))
-            wrote = true;
-
-        void* state = invoke_ref_return_rva(recoil, RVA_RecoilComponent_get_State);
-        if (state) {
-            __try {
-                *(Vector2*)((uintptr_t)state + 0x0) = zero_axis; // RecoilState.Recoil
-                *(Vector2*)((uintptr_t)state + 0x8) = zero_axis; // RecoilState.PreviousRecoil
-                *(int32_t*)((uintptr_t)state + 0x10) = 0;         // RecoilState.RecoilAimEffectMult
-                wrote = true;
-            } __except(EXCEPTION_EXECUTE_HANDLER) {}
-        }
-
-        return wrote;
-    }
-
-    static bool clear_spread_use_state(void* state) {
-        if (!state)
-            return false;
-
-        __try {
-            *(int32_t*)((uintptr_t)state + 0x0) = 0; // SpreadUseState.Angle
-            return true;
-        } __except(EXCEPTION_EXECUTE_HANDLER) {}
-        return false;
-    }
-
-    static bool clear_item_net_spread_state(void* item) {
-        if (!item)
-            return false;
-
-        void* item_net = nullptr;
-        __try { item_net = *(void**)((uintptr_t)item + 0x228); } // ItemBeh._itemNet
-        __except(EXCEPTION_EXECUTE_HANDLER) { item_net = nullptr; }
-        if (!item_net)
-            return false;
-
-        return clear_spread_use_state((void*)((uintptr_t)item_net + 0x100)); // ItemNet._SpreadUseState
-    }
-
-    static bool clear_dispersion_component_spread(void* dispersion) {
-        if (!dispersion)
-            return false;
-
-        bool wrote = false;
-
-        void* state = invoke_ref_return_rva(dispersion, RVA_DispersionComponent_get_State);
-        if (state) {
-            __try {
-                *(float*)((uintptr_t)state + 0x0) = 0.0f; // DispersionChangeTime
-                *(int32_t*)((uintptr_t)state + 0x4) = 0;  // IsFirstDecreaseDone
-                *(int32_t*)((uintptr_t)state + 0x8) = 0;  // IsFirstIncreaseDone
-                *(int32_t*)((uintptr_t)state + 0xC) = 0;  // Dispersion
-                *(int32_t*)((uintptr_t)state + 0x10) = 0; // DispersionMult
-                wrote = true;
-            } __except(EXCEPTION_EXECUTE_HANDLER) {}
-        }
-
-        __try {
-            *(float*)((uintptr_t)dispersion + 0x258) = 0.0f; // DispersionComponent.ChangeDuration
-            *(float*)((uintptr_t)dispersion + 0x268) = 0.0f; // DispersionComponent.MinCalculateDispersion
-            wrote = true;
-        } __except(EXCEPTION_EXECUTE_HANDLER) {}
-
-        void* weapon_prototype = nullptr;
-        __try { weapon_prototype = *(void**)((uintptr_t)dispersion + 0x260); } // DispersionComponent.WeaponPrototype
-        __except(EXCEPTION_EXECUTE_HANDLER) { weapon_prototype = nullptr; }
-
-        if (patch_weapon_prototype_ballistics(weapon_prototype, false, true))
-            wrote = true;
-
-        return wrote;
-    }
-
-    static bool clear_loadout_item_spread(void* item) {
-        if (!item)
-            return false;
-
-        bool wrote = false;
-
-        void* weapon = nullptr;
-        void* dispersion = nullptr;
-        __try {
-            weapon = *(void**)((uintptr_t)item + 0x260);     // LoadoutItemComponent._weaponComponent
-            dispersion = *(void**)((uintptr_t)item + 0x290); // LoadoutItemComponent._dispersionComponent
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            weapon = nullptr;
-            dispersion = nullptr;
-        }
-
-        if (weapon) {
-            void* request_container = nullptr;
-            __try { request_container = *(void**)((uintptr_t)weapon + 0x270); } // WeaponComponent.ItemUseRequestContainer
-            __except(EXCEPTION_EXECUTE_HANDLER) { request_container = nullptr; }
-
-            if (clear_single_request_container_offsets(request_container))
-                wrote = true;
-        }
-
-        if (clear_item_net_spread_state(item))
-            wrote = true;
-
-        if (clear_dispersion_component_spread(dispersion))
-            wrote = true;
-
-        return wrote;
-    }
-
-    static bool clear_local_weapon_spread() {
-        return clear_loadout_item_spread(get_current_loadout_item());
     }
 
     Vector3 get_object_position(void* obj);
@@ -1988,6 +1465,133 @@ namespace unity {
         }
     }
 
+    bool world_to_screen(const Vector3& world, Vector2& screen, void* camera) {
+        if (!camera) return world_to_screen(world, screen);
+        screen = {};
+        __try {
+            Vector3 active_pos = {};
+            Quaternion active_rot = {};
+            float active_fov = 75.0f, active_near = 0.3f, active_far = 1000.0f, active_aspect = 0.0f;
+            bool have_active_pose = get_active_player_camera_state(
+                &active_pos, &active_rot, &active_fov, &active_near, &active_far, &active_aspect);
+            if (!have_active_pose) {
+                have_active_pose = get_active_cinemachine_state(
+                    &active_pos, &active_rot, &active_fov, &active_near, &active_far, &active_aspect);
+            }
+
+            if (active_aspect <= 0.0f) {
+                HWND game_hwnd = renderer::get_window();
+                RECT rect = {};
+                if (game_hwnd && GetWindowRect(game_hwnd, &rect)) {
+                    float width = (float)(rect.right - rect.left);
+                    float height = (float)(rect.bottom - rect.top);
+                    if (width > 0.0f && height > 0.0f)
+                        active_aspect = width / height;
+                }
+                if (active_aspect <= 0.0f)
+                    active_aspect = 16.0f / 9.0f;
+            }
+
+            if (have_active_pose && has_position_value(active_pos) && is_valid_quat(active_rot)) {
+                Vector3 fwd = {}, up = {}, right = {};
+                basis_from_quat(active_rot, fwd, up, right);
+                Matrix4x4 view_mat = build_view_matrix(active_pos, fwd, up, right);
+                Matrix4x4 proj_mat = build_projection_matrix(active_fov, active_aspect, active_near, active_far);
+                return world_to_screen(world, screen, view_mat, proj_mat);
+            }
+
+            void* transform = get_transform(camera);
+            if (!transform) return false;
+            Vector3 pos = get_transform_position(transform);
+
+            if (!has_position_value(pos) && have_active_pose)
+                pos = active_pos;
+            if (!has_position_value(pos)) {
+                if (g_local_player_valid)
+                    pos = g_local_player_pos;
+            }
+
+            Vector3 fwd = {}, up = {}, right = {};
+            if (have_active_pose && is_valid_quat(active_rot))
+                basis_from_quat(active_rot, fwd, up, right);
+
+            void* get_fwd_m = il2cpp::class_get_method_from_name(g_transform_class, "get_forward", 0);
+            void* get_up_m = il2cpp::class_get_method_from_name(g_transform_class, "get_up", 0);
+            void* get_right_m = il2cpp::class_get_method_from_name(g_transform_class, "get_right", 0);
+
+            auto invoke_v3 = [](void* m, void* obj) -> Vector3 {
+                Vector3 v = {0,0,0};
+                if (!m || !obj) return v;
+                void* exc = nullptr;
+                __try {
+                    void* r = il2cpp::runtime_invoke(m, obj, nullptr, &exc);
+                    if (r) { void* u = il2cpp::object_unbox(r); if (u) memcpy(&v, u, sizeof(Vector3)); }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                return v;
+            };
+
+            if (fwd.x == 0 && fwd.y == 0 && fwd.z == 0) {
+                fwd = invoke_v3(get_fwd_m, transform);
+                up = invoke_v3(get_up_m, transform);
+                right = invoke_v3(get_right_m, transform);
+            }
+
+            float fov = 75.0f, near_ = 0.3f, far_ = 1000.0f;
+            float aspect = 16.0f / 9.0f;
+            if (active_fov > 1.0f && active_fov <= 179.0f) fov = active_fov;
+            if (active_near > 0.0f) near_ = active_near;
+            if (active_far > 0.0f) far_ = active_far;
+            if (active_aspect > 0.0f) aspect = active_aspect;
+            {
+                void* get_fov_m = il2cpp::class_get_method_from_name(g_camera_class, "get_fieldOfView", 0);
+                void* get_aspect_m = il2cpp::class_get_method_from_name(g_camera_class, "get_aspect", 0);
+                void* get_near_m = il2cpp::class_get_method_from_name(g_camera_class, "get_nearClipPlane", 0);
+                void* get_far_m = il2cpp::class_get_method_from_name(g_camera_class, "get_farClipPlane", 0);
+                auto invoke_f = [](void* m, void* obj) -> float {
+                    if (!m || !obj) return 0;
+                    void* exc = nullptr;
+                    __try {
+                        void* r = il2cpp::runtime_invoke(m, obj, nullptr, &exc);
+                        if (r) { void* u = il2cpp::object_unbox(r); if (u) return *(float*)u; }
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                    return 0;
+                };
+                float f = invoke_f(get_fov_m, camera);
+                float a = invoke_f(get_aspect_m, camera);
+                float n = invoke_f(get_near_m, camera);
+                float f2 = invoke_f(get_far_m, camera);
+                if (f > 0 && f <= 180) fov = f;
+                if (a > 0) aspect = a;
+                if (n > 0) near_ = n;
+                if (f2 > 0) far_ = f2;
+            }
+
+            if (fwd.x == 0 && fwd.y == 0 && fwd.z == 0) {
+                void* get_euler_m = il2cpp::class_get_method_from_name(g_transform_class, "get_eulerAngles", 0);
+                Vector3 euler = invoke_v3(get_euler_m, transform);
+                float yaw = euler.y * 3.14159265f / 180.0f;
+                float pitch = euler.x * 3.14159265f / 180.0f;
+                fwd.x = cosf(pitch) * sinf(yaw);
+                fwd.y = sinf(pitch);
+                fwd.z = cosf(pitch) * cosf(yaw);
+                right.x = fwd.z; right.y = 0; right.z = -fwd.x;
+                float rl = sqrtf(right.x * right.x + right.z * right.z);
+                if (rl > 0.001f) { right.x /= rl; right.z /= rl; }
+                up.x = fwd.y * right.z - fwd.z * right.y;
+                up.y = fwd.z * right.x - fwd.x * right.z;
+                up.z = fwd.x * right.y - fwd.y * right.x;
+            }
+
+            if (fwd.x == 0 && fwd.y == 0 && fwd.z == 0) return false;
+
+            Matrix4x4 view_mat = build_view_matrix(pos, fwd, up, right);
+            Matrix4x4 proj_mat = build_projection_matrix(fov, aspect, near_, far_);
+            return world_to_screen(world, screen, view_mat, proj_mat);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
     std::string get_object_name(void* obj) {
         if (!obj) return "null";
         void* get_name = il2cpp::class_get_method_from_name(g_object_class, "get_name", 0);
@@ -2087,7 +1691,7 @@ namespace unity {
         return pos;
     }
 
-    bool aim_at_world(const Vector3& target, float smooth) {
+    bool aim_at_world(const Vector3& target, float smooth, bool recoil_compensation) {
         try_init_classes();
         if (!il2cpp::initialized)
             return false;
@@ -2118,6 +1722,14 @@ namespace unity {
         float yaw = normalize_angle(atan2f(dir.x, dir.z) * (180.0f / 3.14159265f));
         float pitch = clamp_angle(-atan2f(dir.y, flat) * (180.0f / 3.14159265f), -65.0f, 80.0f);
 
+        if (recoil_compensation) {
+            Vector3 recoil_euler = {};
+            __try { recoil_euler = *(Vector3*)((uintptr_t)move + 0xD8); } // MoveComponent._recoilViewCurrentEuler
+            __except(EXCEPTION_EXECUTE_HANDLER) { recoil_euler = {}; }
+            pitch = clamp_angle(pitch - recoil_euler.x, -65.0f, 80.0f);
+            yaw = normalize_angle(yaw - recoil_euler.y);
+        }
+
         Vector2 target_angles;
         target_angles.x = pitch;
         target_angles.y = yaw;
@@ -2139,136 +1751,13 @@ namespace unity {
         return invoke_void_vector2_rva(move, RVA_MoveComponent_SetViewRotation, write_angles);
     }
 
-    bool set_recoil_flow_disabled(bool disabled) {
-        try_init_classes();
-        if (!il2cpp::initialized)
-            return false;
-
-        bool ok = set_recoil_flow_patch_enabled(false);
-        if (!set_recoil_camera_patch_enabled(disabled))
-            ok = false;
-        return ok;
-    }
-
-    bool set_no_spread_disabled(bool disabled) {
-        try_init_classes();
-        if (!il2cpp::initialized)
-            return false;
-
-        return set_no_spread_patch_enabled(disabled);
-    }
-
-    bool compensate_recoil() {
-        try_init_classes();
-        if (!il2cpp::initialized)
-            return false;
-
-        bool wrote = set_recoil_camera_patch_enabled(true);
-        void* move = get_local_move_component();
-        if (!move)
-            return wrote;
-
-        Vector2 zero_axis = {};
-        Vector3 zero_euler = {};
-
-        if (invoke_void_vector2_float_rva(move, RVA_MoveComponent_SetRecoilView, zero_axis, 0.0f))
-            wrote = true;
-
-        __try {
-            *(Vector3*)((uintptr_t)move + 0xD8) = zero_euler; // MoveComponent._recoilViewCurrentEuler
-            *(Vector3*)((uintptr_t)move + 0xE4) = zero_euler; // MoveComponent._recoilViewTargetEuler
-            *(Vector2*)((uintptr_t)move + 0xF0) = zero_axis;  // MoveComponent._recoilAxisTarget
-            *(float*)((uintptr_t)move + 0xF8) = 0.0f;         // MoveComponent._recoilViewFactor
-            wrote = true;
-        } __except(EXCEPTION_EXECUTE_HANDLER) {}
-
-        void* recoil = nullptr;
-        __try { recoil = *(void**)((uintptr_t)move + 0xB8); } // MoveComponent._recoil
-        __except(EXCEPTION_EXECUTE_HANDLER) { recoil = nullptr; }
-
-        if (clear_recoil_component_camera_state(recoil))
-            wrote = true;
-
-        return wrote;
-    }
-
-    bool remove_spread() {
-        try_init_classes();
-        if (!il2cpp::initialized)
-            return false;
-
-        bool patches_enabled = set_no_spread_patch_enabled(true);
-        bool wrote = patches_enabled;
-        if (clear_local_weapon_spread())
-            wrote = true;
-
-        if (patches_enabled)
-            return wrote;
-
-        static DWORD last_spread_scan = 0;
-        static bool last_spread_success = false;
-        DWORD fallback_interval = wrote ? 1500 : 500;
-        if (!scan_interval_elapsed(last_spread_scan, fallback_interval)) {
-            last_spread_success = wrote || last_spread_success;
-            return last_spread_success;
+    static void* get_kinematic_projectile_view_class() {
+        if (!g_kinematic_projectile_view_class) {
+            g_kinematic_projectile_view_class = find_class_anywhere(
+                "Psa.Core.Modules.Shooting.Projectiles.Kinematic.Views",
+                "KinematicProjectileView");
         }
-
-        if (clear_item_use_request_offsets())
-            wrote = true;
-
-        void* spread_class = get_spread_use_component_class();
-        int32_t spread_count = 0;
-        void* spread_arr = nullptr;
-        __try { spread_arr = find_objects_of_type(spread_class, spread_count, true); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { spread_arr = nullptr; spread_count = 0; }
-
-        void** spread_elements = nullptr;
-        if (spread_arr && spread_count > 0) {
-            __try { spread_elements = managed_object_array_items(spread_arr); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { spread_elements = nullptr; }
-        }
-        if (spread_count > 64)
-            spread_count = 64;
-
-        for (int32_t i = 0; spread_elements && i < spread_count; i++) {
-            void* spread = nullptr;
-            __try { spread = spread_elements[i]; }
-            __except(EXCEPTION_EXECUTE_HANDLER) { spread = nullptr; }
-            if (!spread)
-                continue;
-
-            void* state = invoke_ref_return_rva(spread, RVA_SpreadUseComponent_get_State);
-            if (clear_spread_use_state(state))
-                wrote = true;
-        }
-
-        void* dispersion_class = get_dispersion_component_class();
-        int32_t dispersion_count = 0;
-        void* dispersion_arr = nullptr;
-        __try { dispersion_arr = find_objects_of_type(dispersion_class, dispersion_count, true); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { dispersion_arr = nullptr; dispersion_count = 0; }
-
-        void** dispersion_elements = nullptr;
-        if (dispersion_arr && dispersion_count > 0) {
-            __try { dispersion_elements = managed_object_array_items(dispersion_arr); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { dispersion_elements = nullptr; }
-        }
-        if (dispersion_count > 64)
-            dispersion_count = 64;
-
-        for (int32_t i = 0; dispersion_elements && i < dispersion_count; i++) {
-            void* dispersion = nullptr;
-            __try { dispersion = dispersion_elements[i]; }
-            __except(EXCEPTION_EXECUTE_HANDLER) { dispersion = nullptr; }
-            if (!dispersion)
-                continue;
-
-            if (clear_dispersion_component_spread(dispersion))
-                wrote = true;
-        }
-
-        last_spread_success = wrote;
-        return wrote;
+        return g_kinematic_projectile_view_class;
     }
 
     std::vector<WorldObjectInfo> get_grenades() {
@@ -2751,7 +2240,7 @@ namespace unity {
     static PlayerInfo make_player_info(const std::string& name, const Vector3& pos, uintptr_t object_ptr,
         uintptr_t avatar_ptr, int source_type) {
         Vector3 head = pos;
-        head.y += 2.5f;
+        head.y += 1.7f;
 
         PlayerInfo pi;
         pi.name = name;
@@ -3152,7 +2641,7 @@ namespace unity {
             if (has_position_value(pos)) {
                 pi.position = pos;
                 pi.head_position = pos;
-                pi.head_position.y += 2.5f;
+                pi.head_position.y += 1.7f;
             }
             pi.is_valid = has_position_value(pos);
             if (mob) {
@@ -3254,11 +2743,6 @@ namespace unity {
             __try { elements = managed_object_array_items(arr); }
             __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
         }
-
-        g_local_pno_ptr = nullptr;
-        g_local_player_avatar = nullptr;
-        g_local_player_camera_component = nullptr;
-        g_local_player_valid = false;
 
         for (int32_t i = 0; elements && i < count; i++) {
             void* obj = elements[i];
