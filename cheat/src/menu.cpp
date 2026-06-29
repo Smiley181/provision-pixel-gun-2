@@ -9,7 +9,7 @@
 
 namespace menu {
     static int current_tab = 0;
-    static const char* tabs[] = { "Aimbot", "ESP", "Settings" };
+    static const char* tabs[] = { "Aimbot", "ESP", "Config" };
 
     void render_aimbot_tab() {
         ImGui::Checkbox("Enable Aimbot", &aimbot_config.enabled);
@@ -39,43 +39,12 @@ namespace menu {
         }
     }
 
-    void render_settings_tab() {
-        ImGui::Text("Settings");
-        ImGui::Separator();
-
+    void render_config_tab() {
         if (ImGui::Button("Save Config", ImVec2(120, 0)))
             config::save();
         ImGui::SameLine();
         if (ImGui::Button("Load Config", ImVec2(120, 0)))
             config::load();
-
-        ImGui::Separator();
-        ImGui::Text("Menu Key: INSERT");
-        ImGui::Text("IL2CPP Status: %s", il2cpp::initialized ? "Connected" : "Not Connected");
-        ImGui::Text("Module Base: 0x%llX", (unsigned long long)il2cpp::module_base);
-
-        if (il2cpp::initialized) {
-            void* domain = il2cpp::get_domain();
-            if (domain) {
-                size_t count = 0;
-                void** assemblies = il2cpp::get_assemblies(domain, &count);
-                ImGui::Text("Assemblies Loaded: %zu", count);
-                for (size_t i = 0; i < count && i < 10; i++) {
-                    if (assemblies[i]) {
-                        void* img = il2cpp::assembly_get_image(assemblies[i]);
-                        if (img)
-                            ImGui::BulletText("%s", il2cpp::image_get_name(img));
-                    }
-                }
-                if (count > 10) ImGui::Text("... and %zu more", count - 10);
-            }
-        }
-
-        ImGui::Separator();
-        ImGui::Text("Debug Info:");
-        ImGui::Text("Player Count: %d", unity::get_debug_player_count());
-        ImGui::Text("Camera Found: %s", unity::get_debug_camera_found() ? "Yes" : "No");
-        ImGui::Text("Unity Ready: %s", unity::is_ready() ? "Yes" : "No");
     }
 
     void render() {
@@ -97,7 +66,7 @@ namespace menu {
         switch (current_tab) {
         case 0: render_aimbot_tab(); break;
         case 1: render_esp_tab(); break;
-        case 2: render_settings_tab(); break;
+        case 2: render_config_tab(); break;
         }
 
         ImGui::EndChild();
