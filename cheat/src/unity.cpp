@@ -129,6 +129,7 @@ namespace unity {
     static void* g_cached_get_camera_position_method = nullptr;
     static void* g_cached_get_first_person_camera_method = nullptr;
     static void* g_cached_get_player_avatar_method = nullptr;
+    static void* g_cached_get_pno_nickname_method = nullptr;
     static void* g_cached_game_mode_get_player_avatar_method = nullptr;
     static void* g_cached_game_mode_get_team_relation_method = nullptr;
     static void* g_cached_game_mode_team_is_mine_method = nullptr;
@@ -192,6 +193,16 @@ namespace unity {
     static std::vector<uintptr_t> g_chams_enemy_mobs;
     static std::vector<uintptr_t> g_tracked_game_modes;
     static DWORD g_last_xray_present_ms = 0;
+
+    struct PlayerIdentityEntry {
+        uintptr_t mob_ptr;
+        uintptr_t pno_ptr;
+        std::string name;
+        DWORD last_seen_ms;
+    };
+
+    static std::vector<PlayerIdentityEntry> g_player_identities;
+    static DWORD g_last_identity_scan_ms = 0;
 
     static void xray_hook_install();
 
@@ -2225,6 +2236,8 @@ namespace unity {
         return elements[0];
     }
 
+    static void* safe_get_player_avatar_from_pno(void* pno);
+
     static std::string read_managed_string(void* str_obj) {
         if (!str_obj) return "";
         int len = il2cpp::string_length_fn(str_obj);
@@ -2236,6 +2249,127 @@ namespace unity {
         std::string result(size, 0);
         WideCharToMultiByte(CP_UTF8, 0, chars, len, &result[0], size, nullptr, nullptr);
         return result;
+    }
+
+    static bool starts_with_literal(const std::string& value, const char* prefix) {
+        if (!prefix)
+            return false;
+        size_t prefix_len = strlen(prefix);
+        return value.size() >= prefix_len && memcmp(value.c_str(), prefix, prefix_len) == 0;
+    }
+
+    static bool is_generated_player_name(const std::string& name) {
+        return name.empty() ||
+            starts_with_literal(name, "Enemy_") ||
+            starts_with_literal(name, "Player_") ||
+            starts_with_literal(name, "Mob_") ||
+            starts_with_literal(name, "GMob_") ||
+            starts_with_literal(name, "GPlayer_");
+    }
+
+    static std::string read_managed_string_field(void* obj, uintptr_t offset) {
+        return read_managed_string(safe_read_ptr(obj, offset));
+    }
+
+    static std::string read_player_network_object_nickname(void* pno) {
+        if (!pno)
+            return "";
+
+        void* klass = get_object_runtime_class(pno, ensure_player_network_object_class());
+        if (!g_cached_get_pno_nickname_method && klass)
+            g_cached_get_pno_nickname_method = class_get_method_recursive(klass, "get_Nickname", 0);
+
+        std::string name = read_managed_string(invoke_object_method(pno, g_cached_get_pno_nickname_method));
+        if (!name.empty())
+            return name;
+
+        name = read_managed_string_field(pno, 0xA8); // PlayerNetworkObject.cache_Nickname
+        if (!name.empty())
+            return name;
+
+        return read_managed_string_field(pno, 0x90); // PlayerNetworkObject._Nickname
+    }
+
+    static void cache_player_identity(void* mob, void* pno, const std::string& name) {
+        if ((!mob && !pno) || is_generated_player_name(name) || name == "BOT")
+            return;
+
+        uintptr_t mob_ptr = (uintptr_t)mob;
+        uintptr_t pno_ptr = (uintptr_t)pno;
+        DWORD now = GetTickCount();
+
+        for (auto& entry : g_player_identities) {
+            if ((mob_ptr && entry.mob_ptr == mob_ptr) || (pno_ptr && entry.pno_ptr == pno_ptr)) {
+                if (mob_ptr)
+                    entry.mob_ptr = mob_ptr;
+                if (pno_ptr)
+                    entry.pno_ptr = pno_ptr;
+                entry.name = name;
+                entry.last_seen_ms = now;
+                return;
+            }
+        }
+
+        if (g_player_identities.size() >= 128)
+            g_player_identities.erase(g_player_identities.begin());
+
+        g_player_identities.push_back({ mob_ptr, pno_ptr, name, now });
+    }
+
+    static std::string lookup_player_identity_name(void* mob, void* pno = nullptr) {
+        uintptr_t mob_ptr = (uintptr_t)mob;
+        uintptr_t pno_ptr = (uintptr_t)pno;
+        if (!mob_ptr && !pno_ptr)
+            return "";
+
+        for (auto it = g_player_identities.rbegin(); it != g_player_identities.rend(); ++it) {
+            if ((mob_ptr && it->mob_ptr == mob_ptr) || (pno_ptr && it->pno_ptr == pno_ptr))
+                return it->name;
+        }
+
+        return "";
+    }
+
+    static void apply_cached_player_identity(PlayerInfo& pi, void* mob, void* pno = nullptr) {
+        std::string name = lookup_player_identity_name(mob, pno);
+        if (!name.empty() && is_generated_player_name(pi.name))
+            pi.name = name;
+    }
+
+    static void refresh_player_identity_cache(bool force = false) {
+        DWORD now = GetTickCount();
+        if (!force && g_last_identity_scan_ms != 0 && now - g_last_identity_scan_ms < 2500)
+            return;
+        g_last_identity_scan_ms = now;
+
+        void* pno_class = ensure_player_network_object_class();
+        if (!pno_class)
+            return;
+
+        int32_t count = 0;
+        void* arr = nullptr;
+        if (!safe_find_objects_of_type(pno_class, count, false, &arr) || !arr || count <= 0)
+            return;
+
+        void** elements = safe_managed_object_array_items(arr);
+        if (!elements)
+            return;
+
+        if (count > 96)
+            count = 96;
+
+        for (int32_t i = 0; i < count; i++) {
+            void* pno = safe_array_element(elements, i);
+            if (!pno)
+                continue;
+
+            std::string name = read_player_network_object_nickname(pno);
+            if (name.empty())
+                continue;
+
+            void* mob = safe_get_player_avatar_from_pno(pno);
+            cache_player_identity(mob, pno, name);
+        }
     }
 
     static Vector3 get_position_from_transform_field(void* obj, uintptr_t offset) {
@@ -3121,6 +3255,8 @@ namespace unity {
                 apply_bot_identity(pi, bot, mob);
                 if (!health_ok)
                     pi.is_dead = false;
+            } else {
+                apply_cached_player_identity(pi, mob);
             }
             pi.is_local = (mob == g_local_player_avatar);
         } else if (bot) {
@@ -3450,6 +3586,10 @@ namespace unity {
     }
 
     static void merge_known_team_info(PlayerInfo& dst, const PlayerInfo& src) {
+        if ((src.name == "BOT" && dst.name != "BOT") ||
+            (!is_generated_player_name(src.name) && is_generated_player_name(dst.name))) {
+            dst.name = src.name;
+        }
         if (src.team_known) {
             dst.team_known = true;
             dst.is_teammate = src.is_teammate;
@@ -3564,6 +3704,8 @@ namespace unity {
                 g_game_mode_mob_count++;
                 track_mob_pointer(mob);
                 cache_mob_team_number(mob, effective_player_team);
+                if (!is_bot_player)
+                    cache_player_identity(mob, nullptr, name);
 
                 uintptr_t mob_ptr = (uintptr_t)mob;
                 bool team_known = effective_local_team >= 0 && effective_player_team >= 0;
@@ -3667,6 +3809,8 @@ namespace unity {
                 pi.team_known = true;
                 pi.is_teammate = true;
             }
+            if (!is_bot)
+                apply_cached_player_identity(pi, mob, pi.source_type == 1 ? (void*)pi.object_ptr : nullptr);
             pi.is_local = pi.is_local || (mob == g_local_player_avatar);
         } else if (bot) {
             apply_bot_identity(pi, bot, nullptr);
@@ -3813,6 +3957,8 @@ namespace unity {
                 }
                 if (existing->team_known && !existing->is_teammate && is_player_mob_bot(mob))
                     existing->name = "BOT";
+                else
+                    apply_cached_player_identity(*existing, mob);
                 continue;
             }
 
@@ -3824,7 +3970,9 @@ namespace unity {
                 continue;
 
             bool is_bot = is_player_mob_bot(mob) || get_player_mob_bot_player(mob) != nullptr;
-            PlayerInfo pi = make_player_info(is_bot ? "BOT" : (std::string("Enemy_") + std::to_string(index)),
+            std::string display_name = is_bot ? std::string("BOT") : lookup_player_identity_name(mob);
+            PlayerInfo pi = make_player_info(
+                display_name.empty() ? (std::string("Enemy_") + std::to_string(index)) : display_name,
                 pos, mob_ptr, mob_ptr, 2);
             bool cached_known = apply_cached_mob_team_info(pi, mob);
             if ((cached_known && pi.is_teammate) || (relation_known && relation_teammate))
@@ -3846,6 +3994,8 @@ namespace unity {
 
             pi.is_local = mob == g_local_player_avatar;
             pi.is_dead = safe_get_player_mob_is_dead(mob, is_bot ? false : pi.is_dead);
+            if (!is_bot)
+                apply_cached_player_identity(pi, mob);
             if (!pi.is_valid || pi.is_local)
                 continue;
 
@@ -3887,6 +4037,9 @@ namespace unity {
         std::vector<PlayerInfo> previous_cached = g_cached_players;
         uintptr_t rendered[128] = {};
         int rendered_count = 0;
+
+        if (has_tracked_scene_state())
+            refresh_player_identity_cache(false);
 
         for (uintptr_t game_mode_ptr : g_tracked_game_modes) {
             add_game_mode_players((void*)game_mode_ptr, refreshed, rendered, rendered_count);
@@ -3980,6 +4133,9 @@ namespace unity {
         uintptr_t rendered[128] = {};
         int rendered_count = 0;
 
+        if (has_tracked_scene_state())
+            refresh_player_identity_cache(false);
+
         for (uintptr_t game_mode_ptr : g_tracked_game_modes) {
             add_game_mode_players((void*)game_mode_ptr, players, rendered, rendered_count);
         }
@@ -4029,11 +4185,7 @@ namespace unity {
                     g_pcc_position_count++;
             }
 
-            std::string name;
-            if (g_cached_classes[0].nick_offset > 0) {
-                void* str_obj = safe_read_ptr((void*)ptr, g_cached_classes[0].nick_offset);
-                name = read_managed_string(str_obj);
-            }
+            std::string name = read_player_network_object_nickname(obj);
 
             Vector3 pos = {};
             pos = safe_get_object_position(obj);
@@ -4080,6 +4232,9 @@ namespace unity {
                 ptr,
                 (uintptr_t)avatar,
                 1);
+            if (!name.empty())
+                cache_player_identity(avatar, obj, name);
+            apply_cached_player_identity(pi, avatar, obj);
             if (!pi.is_valid)
                 continue;
             players.push_back(pi);
