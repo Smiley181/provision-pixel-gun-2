@@ -363,12 +363,12 @@ namespace features {
             if (!std::isfinite(dist_to_cam) || dist_to_cam <= 0.0f || dist_to_cam > esp_config.esp_distance * 2.0f)
                 continue;
 
-            Vector3 head_world = player.head_position;
-            if (!is_reasonable_world_point(head_world)) {
-                head_world = player.position;
-                head_world.y += 1.7f;
+            Vector3 aim_head_world = player.head_position;
+            if (!is_reasonable_world_point(aim_head_world)) {
+                aim_head_world = player.position;
+                aim_head_world.y += 1.7f;
             }
-            if (!is_reasonable_world_point(head_world))
+            if (!is_reasonable_world_point(aim_head_world))
                 continue;
 
             Vector2 foot_screen, head_screen;
@@ -381,7 +381,12 @@ namespace features {
             w2s_ok++;
 
             wts_try++;
-            head_ok = safe_world_to_screen(head_world, head_screen, cam);
+            Vector3 box_top_world = player.position;
+            box_top_world.y += 2.05f;
+            if (aim_head_world.y > box_top_world.y)
+                box_top_world = aim_head_world;
+
+            head_ok = safe_world_to_screen(box_top_world, head_screen, cam);
             if (head_ok) {
                 w2s_ok++;
             } else {
@@ -389,27 +394,33 @@ namespace features {
                 head_screen.y -= 80.0f;
             }
 
-            if (!valid_esp_projection(player.position, head_world, foot_screen, head_screen, sw, sh))
+            if (!valid_esp_projection(player.position, box_top_world, foot_screen, head_screen, sw, sh))
                 continue;
 
             // No screen-space smoothing: positions are refreshed every frame and
             // projected through this frame's camera matrix, so the box stays
             // locked to the player during mouse movement instead of trailing it.
 
-            float height = fabsf(foot_screen.y - head_screen.y);
-            if (height < 18.0f)
-                height = 18.0f;
-            if (height > sh * 0.9f)
-                height = sh * 0.9f;
-            // Lift the box top slightly above the head bone so it clears the
-            // player's head. The bottom stays at the feet and the box grows by
-            // `lift`, so only the top edge moves up. This is purely cosmetic for
-            // the ESP: the aimbot aims at the real head bone position directly
-            // (run_aimbot), so this offset never affects the aim point.
-            float lift = height * 0.12f;
-            height += lift;
-            float width = height * 0.5f;
-            ImVec2 center(head_screen.x, head_screen.y - lift);
+            float body_height = fabsf(foot_screen.y - head_screen.y);
+            if (body_height < 18.0f)
+                body_height = 18.0f;
+            if (body_height > sh * 0.9f)
+                body_height = sh * 0.9f;
+
+            // This top padding is purely for the ESP box. The aimbot still uses
+            // PlayerInfo::head_position directly in run_aimbot().
+            float top_pad = body_height * 0.05f;
+            if (top_pad < 2.0f)
+                top_pad = 2.0f;
+            if (top_pad > 8.0f)
+                top_pad = 8.0f;
+
+            float top = (head_screen.y < foot_screen.y ? head_screen.y : foot_screen.y) - top_pad;
+            float bottom = (head_screen.y > foot_screen.y ? head_screen.y : foot_screen.y);
+            float height = bottom - top;
+            float width = body_height * 0.52f;
+            float center_x = (head_screen.x + foot_screen.x) * 0.5f;
+            ImVec2 center(center_x, top);
             if (center.x + width * 0.5f < 0.0f || center.x - width * 0.5f > (float)sw ||
                 center.y + height < 0.0f || center.y > (float)sh)
                 continue;
