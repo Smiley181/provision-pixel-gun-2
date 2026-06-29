@@ -188,6 +188,9 @@ namespace unity {
     static std::vector<uintptr_t> g_tracked_mobs;
     static std::vector<uintptr_t> g_chams_enemy_mobs;
     static std::vector<uintptr_t> g_tracked_game_modes;
+    static DWORD g_last_xray_present_ms = 0;
+
+    static void xray_hook_install();
 
     static constexpr uintptr_t RVA_HealthComponent_get_State = 0x1187720;
     static constexpr uintptr_t RVA_DeathComponent_get_DeathState = 0x11BCC20;
@@ -229,6 +232,18 @@ namespace unity {
     int get_debug_brain_scan_count() { return g_brain_scan_count; }
     int get_debug_camera_scan_count() { return g_camera_scan_count; }
     int get_debug_grenade_count() { return g_grenade_count; }
+    bool has_tracked_scene_state() {
+        return !g_tracked_game_modes.empty() || !g_chams_enemy_mobs.empty();
+    }
+    bool has_recent_main_thread_tracking() {
+        DWORD last = g_last_xray_present_ms;
+        return last != 0 && GetTickCount() - last < 2000;
+    }
+    void ensure_main_thread_tracking() {
+        if (!il2cpp::initialized || !il2cpp::module_base)
+            return;
+        xray_hook_install();
+    }
     const char* get_debug_activity_op() { return g_activity_op.load(); }
     const char* get_debug_activity_class() { return g_activity_class.load(); }
     bool get_debug_activity_include_inactive() { return g_activity_include_inactive.load() != 0; }
@@ -845,36 +860,10 @@ namespace unity {
             }
         }
 
-        if (!scan_interval_elapsed(g_last_brain_scan_ms, 1000))
-            return false;
-        g_brain_scan_count++;
-
-        int32_t brain_count = 0;
-        void* brain_arr = nullptr;
-        __try { brain_arr = find_objects_of_type(g_cinemachine_brain_class, brain_count, true); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
-        if (!brain_arr || brain_count <= 0)
-            return false;
-
-        void** brain_elements = nullptr;
-        __try { brain_elements = managed_object_array_items(brain_arr); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
-        if (!brain_elements)
-            return false;
-
-        void* fallback = nullptr;
-        for (int32_t i = 0; i < brain_count; i++) {
-            void* brain = brain_elements[i];
-            if (!brain) continue;
-            if (!fallback) fallback = brain;
-            if (read_cinemachine_state(brain, nullptr, nullptr)) {
-                g_brain_ptr = brain;
-                return true;
-            }
-        }
-
-        g_brain_ptr = fallback;
-        return g_brain_ptr != nullptr;
+        // Do not fall back to UnityEngine.Object.FindObjectsByType from Present.
+        // dump.cs shows UnityEngine.Object has main-thread-only object APIs, and
+        // broad object scans here can stall the frame after the real Present call.
+        return false;
     }
 
     static bool get_active_cinemachine_state(Vector3* out_pos, Quaternion* out_rot,
@@ -1425,27 +1414,8 @@ namespace unity {
                 goto done;
         }
 
-        // Camera.main was null or invalid — enumerate all cameras
-        if (scan_interval_elapsed(g_last_camera_scan_ms, 1000)) {
-            g_camera_scan_count++;
-            int32_t count = 0;
-            void* arr = nullptr;
-            __try { arr = find_objects_of_type(g_camera_class, count, true); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-            if (arr && count > 0) {
-                void** elements = managed_object_array_items(arr);
-                if (elements) {
-                    for (int32_t i = 0; i < count; i++) {
-                        if (elements[i] && position_valid(elements[i])) {
-                            best_cam = elements[i];
-                            goto done;
-                        }
-                    }
-                    best_cam = elements[0];
-                }
-            }
-            if (best_cam)
-                g_cached_fallback_camera = best_cam;
-        }
+        // Avoid scene-wide Camera enumeration from Present. Camera.current/main
+        // and tracked Cinemachine state are cheap enough; object scans are not.
 
         if (!best_cam && g_cached_fallback_camera)
             best_cam = g_cached_fallback_camera;
@@ -1520,9 +1490,6 @@ namespace unity {
     }
 
     bool world_to_screen(const Vector3& world, Vector2& screen) {
-        void* cam = get_main_camera();
-        if (!cam) return false;
-
         __try {
             Vector3 active_pos = {};
             Quaternion active_rot = {};
@@ -1554,6 +1521,9 @@ namespace unity {
                 Matrix4x4 proj_mat = build_projection_matrix(active_fov, active_aspect, active_near, active_far);
                 return world_to_screen(world, screen, view_mat, proj_mat);
             }
+
+            void* cam = get_main_camera();
+            if (!cam) return false;
 
             // Try WorldToScreenPoint first
             if (g_cached_wts_method) {
@@ -3827,6 +3797,11 @@ namespace unity {
         }
 
         append_chams_enemy_players(players, rendered, rendered_count);
+        if (has_tracked_scene_state()) {
+            append_cached_fallback_players(previous_cached, players, rendered, rendered_count);
+            publish_player_snapshot(players);
+            return players;
+        }
 
         int32_t count = 0;
         void* arr = nullptr;
@@ -4230,6 +4205,14 @@ namespace unity {
     // Applies chams only to enemies. Apply-first so configs are initialized,
     // then write color, ensuring the value sticks.
     static void apply_chams_from_xray_system(void* self) {
+        g_last_xray_present_ms = GetTickCount();
+
+        void* game_mode = nullptr;
+        __try { game_mode = safe_read_ptr(self, 0x28); } // XrayPresentSystem._gameMode
+        __except(EXCEPTION_EXECUTE_HANDLER) { game_mode = nullptr; }
+        if (game_mode)
+            track_game_mode_pointer(game_mode);
+
         void* list_ptr = nullptr;
         __try { list_ptr = *(void**)((uintptr_t)self + 0x30); }
         __except(EXCEPTION_EXECUTE_HANDLER) { return; }
@@ -4332,53 +4315,8 @@ namespace unity {
             g_chams_color[3] = color[3];
         }
 
-        // Install hook on first toggle
+        // Install hook on first toggle. The hook itself runs inside the game's
+        // present system, so applying chams waits for that main-thread callback.
         xray_hook_install();
-
-        // Immediate apply from this thread as fallback (one-shot)
-        try_init_classes();
-        if (!il2cpp::initialized || !enabled) return;
-
-        void* pv_class = find_class_anywhere("Psa.Core.Modules.Player.Components.Implementation", "PlayerVisuals");
-        if (!pv_class) return;
-
-        int32_t count = 0;
-        void* arr = nullptr;
-        __try { arr = find_objects_of_type(pv_class, count, true); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { return; }
-        if (!arr || count <= 0) return;
-
-        void** elements = nullptr;
-        __try { elements = managed_object_array_items(arr); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { return; }
-        if (!elements) return;
-        if (count > 64) count = 64;
-
-        for (int32_t i = 0; i < count; i++) {
-            void* pv = nullptr;
-            __try { pv = elements[i]; }
-            __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
-            if (!pv) continue;
-
-            // Skip non-enemies (TeamRelation.Enemy = 2)
-            int relation = 0;
-            __try { relation = get_chams_team_relation(pv); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { relation = 0; }
-            if (relation != 2) continue;
-
-            track_chams_enemy_mob_pointer(safe_read_ptr(pv, 0x50)); // PlayerMobBeh._playerMob
-
-            __try { rva_remove_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-            __try { rva_remove_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-
-            if (glow) {
-                // Apply glow first so config is initialized, then write color
-                __try { rva_apply_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-                __try { apply_chams_color(pv, color ? color : g_chams_color); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-            }
-            if (xray) {
-                __try { rva_apply_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-            }
-        }
     }
 }

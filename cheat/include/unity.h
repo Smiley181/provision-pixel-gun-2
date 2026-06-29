@@ -90,6 +90,9 @@ namespace unity {
     const char* get_debug_activity_class();
     bool get_debug_activity_include_inactive();
     unsigned long long get_debug_activity_elapsed_ms();
+    bool has_tracked_scene_state();
+    bool has_recent_main_thread_tracking();
+    void ensure_main_thread_tracking();
     void* get_main_camera();
     Matrix4x4 get_view_matrix(void* camera);
     Matrix4x4 get_projection_matrix(void* camera);

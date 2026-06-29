@@ -176,22 +176,44 @@ namespace features {
         __except(EXCEPTION_EXECUTE_HANDLER) {}
     }
 
+    static void safe_ensure_main_thread_tracking() {
+        __try { unity::ensure_main_thread_tracking(); }
+        __except(EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
     void update_players() {
         static DWORD last_scan = 0;
         static DWORD last_refresh = 0;
-        static DWORD scan_interval = 500;
+        static DWORD scan_interval = 2500;
         static int empty_scan_count = 0;
+        static bool bootstrap_delay_started = false;
+        static DWORD first_scene_scan_after = 0;
         DWORD now = GetTickCount();
 
-        if (now - last_refresh >= 33) {
+        if (!bootstrap_delay_started) {
+            bootstrap_delay_started = true;
+            first_scene_scan_after = now + 2500;
+            last_scan = now;
+        }
+
+        if (unity::is_ready())
+            safe_ensure_main_thread_tracking();
+
+        if (now - last_refresh >= 50) {
             last_refresh = now;
             auto refreshed = unity::refresh_cached_players();
             if (!refreshed.empty()) {
                 g_players = refreshed;
                 empty_scan_count = 0;
-                scan_interval = 500;
+                scan_interval = 5000;
             }
         }
+
+        if (unity::has_tracked_scene_state() || unity::has_recent_main_thread_tracking())
+            return;
+
+        if (now - first_scene_scan_after > 0x70000000u)
+            return;
 
         if (now - last_scan < scan_interval)
             return;
@@ -201,12 +223,12 @@ namespace features {
         if (!scanned.empty()) {
             g_players = scanned;
             empty_scan_count = 0;
-            scan_interval = 500;
+            scan_interval = 5000;
         } else {
             if (g_players.empty())
                 g_players.clear();
             empty_scan_count++;
-            scan_interval = empty_scan_count >= 3 ? 2000 : (empty_scan_count == 2 ? 1500 : (empty_scan_count == 1 ? 1000 : 500));
+            scan_interval = empty_scan_count >= 3 ? 10000 : (empty_scan_count == 2 ? 5000 : 2500);
         }
     }
 
@@ -382,12 +404,12 @@ namespace features {
         int sh = rect.bottom - rect.top;
 
         static DWORD last_grenade_scan = 0;
-        static DWORD grenade_cooldown = 250;
+        static DWORD grenade_cooldown = 1500;
         if (esp_config.show_grenades && !g_players.empty()) {
             if (now - last_grenade_scan > grenade_cooldown) {
                 last_grenade_scan = now;
                 g_grenades = unity::get_grenades();
-                grenade_cooldown = 250;
+                grenade_cooldown = g_grenades.empty() ? 3000 : 1500;
             }
         } else if (!g_grenades.empty()) {
             g_grenades.clear();
@@ -420,13 +442,13 @@ namespace features {
             bool foot_ok = false;
             bool head_ok = false;
             wts_try++;
-            foot_ok = safe_world_to_screen(player.position, foot_screen);
+            foot_ok = safe_world_to_screen(player.position, foot_screen, cam);
             if (!foot_ok)
                 continue;
             w2s_ok++;
 
             wts_try++;
-            head_ok = safe_world_to_screen(head_world, head_screen);
+            head_ok = safe_world_to_screen(head_world, head_screen, cam);
             if (head_ok) {
                 w2s_ok++;
             } else {
@@ -473,7 +495,7 @@ namespace features {
             }
 
             if (esp_config.show_distance) {
-                float dist = (player.position - unity::get_camera_position(cam)).magnitude();
+                float dist = (player.position - cpos).magnitude();
                 char buf[32];
                 snprintf(buf, sizeof(buf), "%.0fm", dist);
                 draw_list->AddText(ImVec2(center.x - 15, center.y + height), IM_COL32(255, 255, 255, 255), buf);
@@ -508,7 +530,7 @@ namespace features {
                 Vector2 screen;
                 bool screen_ok = false;
                 wts_try++;
-                screen_ok = safe_world_to_screen(grenade.position, screen);
+                screen_ok = safe_world_to_screen(grenade.position, screen, cam);
                 if (!screen_ok || !is_finite_screen_point(screen) || !screen_point_near_view(screen, sw, sh))
                     continue;
 
