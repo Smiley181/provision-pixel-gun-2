@@ -167,13 +167,9 @@ namespace features {
 
     void run_chams() {
         static bool prev_enabled = false;
-        static bool prev_xray = false;
-        static bool prev_glow = false;
         static float prev_color[4] = {};
 
         bool changed = prev_enabled != esp_config.show_chams ||
-            prev_xray != esp_config.chams_xray ||
-            prev_glow != esp_config.chams_glow ||
             prev_color[0] != esp_config.chams_color[0] ||
             prev_color[1] != esp_config.chams_color[1] ||
             prev_color[2] != esp_config.chams_color[2] ||
@@ -182,8 +178,6 @@ namespace features {
         if (!changed) return;
 
         prev_enabled = esp_config.show_chams;
-        prev_xray = esp_config.chams_xray;
-        prev_glow = esp_config.chams_glow;
         prev_color[0] = esp_config.chams_color[0];
         prev_color[1] = esp_config.chams_color[1];
         prev_color[2] = esp_config.chams_color[2];
@@ -193,7 +187,7 @@ namespace features {
         if (!unity_ready) return;
 
         if (esp_config.show_chams) {
-            safe_set_chams_enabled(true, esp_config.chams_xray, esp_config.chams_glow, esp_config.chams_color);
+            safe_set_chams_enabled(true, true, true, esp_config.chams_color);
         } else {
             safe_set_chams_enabled(false, false, false, nullptr);
         }

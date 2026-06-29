@@ -33,8 +33,6 @@ namespace menu {
         ImGui::Text("Player Chams");
         ImGui::Checkbox("Enable Chams", &esp_config.show_chams);
         if (esp_config.show_chams) {
-            ImGui::Checkbox("Xray Fill", &esp_config.chams_xray);
-            ImGui::Checkbox("Glow", &esp_config.chams_glow);
             ImGui::ColorEdit4("Chams Color", esp_config.chams_color, ImGuiColorEditFlags_NoInputs);
         }
     }
