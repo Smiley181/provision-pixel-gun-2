@@ -14,6 +14,12 @@ namespace features {
     static bool g_aim_last_success = false;
     static bool g_aim_hold_active = false;
 
+    static bool is_unclassified_bot_entry(const PlayerInfo& player) {
+        if (player.team_known)
+            return false;
+        return player.source_type == 3 || player.source_type == 5 || player.name == "BOT";
+    }
+
     struct Vec2 { float x, y; };
     struct EspSmoothState {
         uintptr_t key;
@@ -127,6 +133,49 @@ namespace features {
         }
     }
 
+    static void* safe_get_main_camera() {
+        void* cam = nullptr;
+        __try { cam = unity::get_main_camera(); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { cam = nullptr; }
+        return cam;
+    }
+
+    static bool safe_get_camera_position(void* cam, Vector3& out_pos) {
+        __try {
+            out_pos = unity::get_camera_position(cam);
+            return true;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            out_pos = {};
+            return false;
+        }
+    }
+
+    static bool safe_world_to_screen(const Vector3& world, Vector2& screen) {
+        bool ok = false;
+        __try { ok = unity::world_to_screen(world, screen); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        return ok;
+    }
+
+    static bool safe_world_to_screen(const Vector3& world, Vector2& screen, void* cam) {
+        bool ok = false;
+        __try { ok = unity::world_to_screen(world, screen, cam); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        return ok;
+    }
+
+    static bool safe_aim_at_world(const Vector3& target) {
+        bool ok = false;
+        __try { ok = unity::aim_at_world(target, aimbot_config.smooth, aimbot_config.recoil_compensation); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        return ok;
+    }
+
+    static void safe_set_chams_enabled(bool enabled, bool xray, bool glow, const float* color) {
+        __try { unity::set_chams_enabled(enabled, xray, glow, color); }
+        __except(EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
     void update_players() {
         static DWORD last_scan = 0;
         static DWORD last_refresh = 0;
@@ -134,62 +183,30 @@ namespace features {
         static int empty_scan_count = 0;
         DWORD now = GetTickCount();
 
-        if (!g_players.empty() && now - last_refresh >= 33) {
+        if (now - last_refresh >= 33) {
             last_refresh = now;
-            __try {
-                auto refreshed = unity::refresh_cached_players();
-                for (auto& rp : refreshed) {
-                    bool found = false;
-                    for (auto& gp : g_players) {
-                        if ((rp.object_ptr && gp.object_ptr == rp.object_ptr) ||
-                            (rp.avatar_ptr && gp.avatar_ptr == rp.avatar_ptr)) {
-                            gp.position = rp.position;
-                            gp.head_position = rp.head_position;
-                            gp.health = rp.health;
-                            gp.max_health = rp.max_health;
-                            gp.is_dead = rp.is_dead;
-                            gp.is_valid = rp.is_valid;
-                            gp.team_known = rp.team_known;
-                            gp.is_teammate = rp.is_teammate;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found)
-                        g_players.push_back(rp);
-                }
-            } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            auto refreshed = unity::refresh_cached_players();
+            if (!refreshed.empty()) {
+                g_players = refreshed;
+                empty_scan_count = 0;
+                scan_interval = 500;
+            }
         }
 
         if (now - last_scan < scan_interval)
             return;
 
         last_scan = now;
-        __try {
-            auto scanned = unity::get_players();
-            if (!scanned.empty()) {
-                g_players = scanned;
-                empty_scan_count = 0;
-                scan_interval = 500;
-            } else {
-                if (g_players.empty())
-                    g_players.clear();
-                empty_scan_count++;
-                scan_interval = empty_scan_count >= 3 ? 2000 : (empty_scan_count == 2 ? 1500 : (empty_scan_count == 1 ? 1000 : 500));
-            }
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            auto cached = unity::get_cached_players();
-            if (!cached.empty())
-                g_players = cached;
-
+        auto scanned = unity::get_players();
+        if (!scanned.empty()) {
+            g_players = scanned;
+            empty_scan_count = 0;
+            scan_interval = 500;
+        } else {
+            if (g_players.empty())
+                g_players.clear();
             empty_scan_count++;
             scan_interval = empty_scan_count >= 3 ? 2000 : (empty_scan_count == 2 ? 1500 : (empty_scan_count == 1 ? 1000 : 500));
-
-            static DWORD last_exception_log = 0;
-            if (now - last_exception_log > 2000) {
-                last_exception_log = now;
-                printf("[features] Exception in update_players (%d), using cached: %zu\n", empty_scan_count, g_players.size());
-            }
         }
     }
 
@@ -221,11 +238,9 @@ namespace features {
         if (!unity_ready) return;
 
         if (esp_config.show_chams) {
-            __try { unity::set_chams_enabled(true, esp_config.chams_xray, esp_config.chams_glow, esp_config.chams_color); }
-            __except(EXCEPTION_EXECUTE_HANDLER) {}
+            safe_set_chams_enabled(true, esp_config.chams_xray, esp_config.chams_glow, esp_config.chams_color);
         } else {
-            __try { unity::set_chams_enabled(false, false, false, nullptr); }
-            __except(EXCEPTION_EXECUTE_HANDLER) {}
+            safe_set_chams_enabled(false, false, false, nullptr);
         }
     }
 
@@ -252,8 +267,7 @@ namespace features {
         }
         if (g_players.empty()) return;
 
-        void* cam = nullptr;
-        __try { cam = unity::get_main_camera(); } __except(EXCEPTION_EXECUTE_HANDLER) { return; }
+        void* cam = safe_get_main_camera();
         if (!cam) return;
 
         HWND hwnd = renderer::get_window();
@@ -272,7 +286,8 @@ namespace features {
             if (!p.is_valid) continue;
             if (p.is_dead) continue;
             if (p.is_local) continue;
-            if (!aimbot_config.aim_teammates && p.team_known && p.is_teammate)
+            if (!aimbot_config.aim_teammates &&
+                ((p.team_known && p.is_teammate) || is_unclassified_bot_entry(p)))
                 continue;
 
             Vector3 target = p.head_position;
@@ -282,12 +297,8 @@ namespace features {
             }
 
             Vector2 screen;
-            __try {
-                if (!unity::world_to_screen(target, screen, cam))
-                    continue;
-            } __except(EXCEPTION_EXECUTE_HANDLER) {
+            if (!safe_world_to_screen(target, screen, cam))
                 continue;
-            }
             float dx = screen.x - cx, dy = screen.y - cy;
             float dist = sqrtf(dx * dx + dy * dy);
             if (dist < closest_dist) {
@@ -298,10 +309,7 @@ namespace features {
         }
 
         if (found_target) {
-            bool aim_ok = false;
-            __try { aim_ok = unity::aim_at_world(best_target, aimbot_config.smooth, aimbot_config.recoil_compensation); }
-            __except(EXCEPTION_EXECUTE_HANDLER) {}
-            g_aim_last_success = aim_ok;
+            g_aim_last_success = safe_aim_at_world(best_target);
         }
     }
 
@@ -328,6 +336,8 @@ namespace features {
         int pno_objects = unity::get_debug_pno_object_count();
         int mob_objects = unity::get_debug_player_mob_count();
         int mob_positions = unity::get_debug_player_mob_position_count();
+        int bot_objects = unity::get_debug_bot_mob_count();
+        int bot_positions = unity::get_debug_bot_mob_position_count();
         int move_objects = unity::get_debug_move_component_count();
         int move_positions = unity::get_debug_move_component_position_count();
         int game_mode_mobs = unity::get_debug_game_mode_mob_count();
@@ -341,19 +351,21 @@ namespace features {
 
         void* cam = nullptr;
         if (esp_config.enabled && unity_ready) {
-            __try { cam = unity::get_main_camera(); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            cam = safe_get_main_camera();
         }
         Vector3 cpos;
-        if (cam) { __try { cpos = unity::get_camera_position(cam); } __except(EXCEPTION_EXECUTE_HANDLER) {} }
+        if (cam)
+            safe_get_camera_position(cam, cpos);
 
         snprintf(debug_buf, sizeof(debug_buf),
             "CHEAT|C34 P:%d/%zu Cam:%s R:%s AH:%s A:%s G:%d/%zu"
-            " VM:%s PM:%s WM:%s",
+            " VM:%s PM:%s WM:%s B:%d/%d",
             player_count, g_players.size(), camera_ok ? "Y" : "N", unity_ready ? "Y" : "N",
             g_aim_hold_active ? "Y" : "N",
             g_aim_last_success ? "Y" : "N",
             grenade_count, g_grenades.size(),
-            vm ? "Y" : "N", pm ? "Y" : "N", wm ? "Y" : "N");
+            vm ? "Y" : "N", pm ? "Y" : "N", wm ? "Y" : "N",
+            bot_objects, bot_positions);
 
         draw_list->AddRectFilled(ImVec2(5, 5), ImVec2(720, 30), IM_COL32(0, 0, 0, 180), 4.0f);
         draw_list->AddText(ImVec2(10, 8), IM_COL32(0, 255, 255, 255), debug_buf);
@@ -374,8 +386,8 @@ namespace features {
         if (esp_config.show_grenades && !g_players.empty()) {
             if (now - last_grenade_scan > grenade_cooldown) {
                 last_grenade_scan = now;
-                __try { g_grenades = unity::get_grenades(); grenade_cooldown = 250; }
-                __except(EXCEPTION_EXECUTE_HANDLER) { g_grenades.clear(); grenade_cooldown = 1000; }
+                g_grenades = unity::get_grenades();
+                grenade_cooldown = 250;
             }
         } else if (!g_grenades.empty()) {
             g_grenades.clear();
@@ -385,7 +397,8 @@ namespace features {
             if (!player.is_valid) continue;
             if (player.is_dead) continue;
             if (player.is_local) continue;
-            if (!esp_config.show_teammates && player.team_known && player.is_teammate)
+            if (!esp_config.show_teammates &&
+                ((player.team_known && player.is_teammate) || is_unclassified_bot_entry(player)))
                 continue;
             if (!is_reasonable_world_point(player.position))
                 continue;
@@ -406,18 +419,14 @@ namespace features {
             Vector2 foot_screen, head_screen;
             bool foot_ok = false;
             bool head_ok = false;
-            __try {
-                wts_try++;
-                foot_ok = unity::world_to_screen(player.position, foot_screen);
-            } __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
+            wts_try++;
+            foot_ok = safe_world_to_screen(player.position, foot_screen);
             if (!foot_ok)
                 continue;
             w2s_ok++;
 
-            __try {
-                wts_try++;
-                head_ok = unity::world_to_screen(head_world, head_screen);
-            } __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
+            wts_try++;
+            head_ok = safe_world_to_screen(head_world, head_screen);
             if (head_ok) {
                 w2s_ok++;
             } else {
@@ -458,7 +467,9 @@ namespace features {
             }
 
             if (esp_config.show_names) {
-                draw_list->AddText(ImVec2(center.x - 30, center.y - 15), color, player.name.c_str());
+                ImVec2 name_size = ImGui::CalcTextSize(player.name.c_str());
+                draw_list->AddText(ImVec2(center.x - name_size.x * 0.5f, center.y - name_size.y - 2.0f),
+                    color, player.name.c_str());
             }
 
             if (esp_config.show_distance) {
@@ -496,12 +507,8 @@ namespace features {
 
                 Vector2 screen;
                 bool screen_ok = false;
-                __try {
-                    wts_try++;
-                    screen_ok = unity::world_to_screen(grenade.position, screen);
-                } __except(EXCEPTION_EXECUTE_HANDLER) {
-                    screen_ok = false;
-                }
+                wts_try++;
+                screen_ok = safe_world_to_screen(grenade.position, screen);
                 if (!screen_ok || !is_finite_screen_point(screen) || !screen_point_near_view(screen, sw, sh))
                     continue;
 

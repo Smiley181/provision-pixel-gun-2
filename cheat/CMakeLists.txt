@@ -39,7 +39,7 @@ set_target_properties(cheat PROPERTIES
 )
 
 if(MSVC)
-    target_compile_options(cheat PRIVATE /W4 /wd4100 /wd4189 /wd4996 /utf-8)
+    target_compile_options(cheat PRIVATE /W4 /wd4100 /wd4189 /wd4996 /utf-8 /EHa)
     set_target_properties(cheat PROPERTIES
         LINK_FLAGS "/NXCOMPAT /DYNAMICBASE"
     )

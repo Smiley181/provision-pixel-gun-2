@@ -74,6 +74,8 @@ namespace unity {
     int get_debug_pno_object_count();
     int get_debug_player_mob_count();
     int get_debug_player_mob_position_count();
+    int get_debug_bot_mob_count();
+    int get_debug_bot_mob_position_count();
     int get_debug_move_component_count();
     int get_debug_move_component_position_count();
     int get_debug_game_mode_mob_count();
@@ -84,6 +86,10 @@ namespace unity {
     int get_debug_brain_scan_count();
     int get_debug_camera_scan_count();
     int get_debug_grenade_count();
+    const char* get_debug_activity_op();
+    const char* get_debug_activity_class();
+    bool get_debug_activity_include_inactive();
+    unsigned long long get_debug_activity_elapsed_ms();
     void* get_main_camera();
     Matrix4x4 get_view_matrix(void* camera);
     Matrix4x4 get_projection_matrix(void* camera);

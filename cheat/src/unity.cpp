@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <atomic>
 
 struct Vector4 { float x, y, z, w; };
 struct Quaternion { float x, y, z, w; };
@@ -118,6 +119,7 @@ namespace unity {
     static void* g_cached_fallback_camera = nullptr;
     static void* g_player_camera_component_class = nullptr;
     static void* g_player_mob_class = nullptr;
+    static void* g_bot_mob_class = nullptr;
     static void* g_move_component_class = nullptr;
     static void* g_game_mode_class = nullptr;
     static void* g_scene_camera_class = nullptr;
@@ -126,8 +128,11 @@ namespace unity {
     static void* g_cached_get_first_person_camera_method = nullptr;
     static void* g_cached_get_player_avatar_method = nullptr;
     static void* g_cached_game_mode_get_player_avatar_method = nullptr;
+    static void* g_cached_game_mode_get_team_relation_method = nullptr;
+    static void* g_cached_game_mode_team_is_mine_method = nullptr;
     static void* g_cached_get_local_player_mob_method = nullptr;
     static void* g_cached_get_mobs_method = nullptr;
+    static void* g_cached_get_bot_move_position_method = nullptr;
     static bool g_view_method_found = false;
     static bool g_proj_method_found = false;
     static bool g_wts_method_found = false;
@@ -138,6 +143,10 @@ namespace unity {
     static DWORD g_last_camera_scan_ms = 0;
     static int g_brain_scan_count = 0;
     static int g_camera_scan_count = 0;
+    static std::atomic<const char*> g_activity_op{ nullptr };
+    static std::atomic<const char*> g_activity_class{ nullptr };
+    static std::atomic<int> g_activity_include_inactive{ 0 };
+    static std::atomic<unsigned long long> g_activity_start_ms{ 0 };
 
     static void* g_brain_ptr = nullptr;
     static Vector3 g_brain_pos = {0,0,0};
@@ -158,6 +167,8 @@ namespace unity {
     static int g_pno_object_count = 0;
     static int g_player_mob_count = 0;
     static int g_player_mob_position_count = 0;
+    static int g_bot_mob_count = 0;
+    static int g_bot_mob_position_count = 0;
     static int g_move_component_count = 0;
     static int g_move_component_position_count = 0;
     static int g_game_mode_mob_count = 0;
@@ -165,9 +176,18 @@ namespace unity {
     static int g_game_mode_team_count = 0;
     static int g_game_mode_team_player_count = 0;
     static int g_game_mode_team_mob_count = 0;
+    static int g_local_team_number = -1;
+    static int g_bot_team_count = 0;
+    static int g_bot_team_ids[64] = {};
+    static int g_bot_team_numbers[64] = {};
+    static int g_mob_team_count = 0;
+    static uintptr_t g_mob_team_ptrs[128] = {};
+    static int g_mob_team_numbers[128] = {};
     static int g_grenade_count = 0;
     static std::vector<PlayerInfo> g_cached_players;
     static std::vector<uintptr_t> g_tracked_mobs;
+    static std::vector<uintptr_t> g_chams_enemy_mobs;
+    static std::vector<uintptr_t> g_tracked_game_modes;
 
     static constexpr uintptr_t RVA_HealthComponent_get_State = 0x1187720;
     static constexpr uintptr_t RVA_DeathComponent_get_DeathState = 0x11BCC20;
@@ -175,6 +195,8 @@ namespace unity {
     static constexpr uintptr_t RVA_MoveComponent_get_ViewRotation = 0x1156DD0;
     static constexpr uintptr_t RVA_MoveComponent_SetViewRotation = 0x11556B0;
     static constexpr uintptr_t RVA_ProjectileViewBase_Kinematic_get_IsFinished = 0xBBCEA0;
+    static constexpr uintptr_t RVA_PlayerVisuals_get_PlayerTeamRelation = 0x10EDD50;
+    static constexpr uintptr_t RVA_EcsComponentNet_get_Id = 0x11F8610;
 
     int get_debug_player_count() { return g_player_count; }
     bool get_debug_camera_found() { return g_camera_found; }
@@ -195,6 +217,8 @@ namespace unity {
     int get_debug_pno_object_count() { return g_pno_object_count; }
     int get_debug_player_mob_count() { return g_player_mob_count; }
     int get_debug_player_mob_position_count() { return g_player_mob_position_count; }
+    int get_debug_bot_mob_count() { return g_bot_mob_count; }
+    int get_debug_bot_mob_position_count() { return g_bot_mob_position_count; }
     int get_debug_move_component_count() { return g_move_component_count; }
     int get_debug_move_component_position_count() { return g_move_component_position_count; }
     int get_debug_game_mode_mob_count() { return g_game_mode_mob_count; }
@@ -205,6 +229,46 @@ namespace unity {
     int get_debug_brain_scan_count() { return g_brain_scan_count; }
     int get_debug_camera_scan_count() { return g_camera_scan_count; }
     int get_debug_grenade_count() { return g_grenade_count; }
+    const char* get_debug_activity_op() { return g_activity_op.load(); }
+    const char* get_debug_activity_class() { return g_activity_class.load(); }
+    bool get_debug_activity_include_inactive() { return g_activity_include_inactive.load() != 0; }
+    unsigned long long get_debug_activity_elapsed_ms() {
+        unsigned long long start = g_activity_start_ms.load();
+        return start ? (GetTickCount64() - start) : 0;
+    }
+
+    static void begin_unity_activity(const char* op, const char* class_name, bool include_inactive,
+        const char** previous_op, const char** previous_class, int* previous_include,
+        unsigned long long* previous_start) {
+        *previous_op = g_activity_op.load();
+        *previous_class = g_activity_class.load();
+        *previous_include = g_activity_include_inactive.load();
+        *previous_start = g_activity_start_ms.load();
+
+        g_activity_class.store(class_name ? class_name : "unknown");
+        g_activity_include_inactive.store(include_inactive ? 1 : 0);
+        g_activity_start_ms.store(GetTickCount64());
+        g_activity_op.store(op);
+    }
+
+    static void restore_unity_activity(const char* previous_op, const char* previous_class,
+        int previous_include, unsigned long long previous_start) {
+        g_activity_op.store(previous_op);
+        g_activity_class.store(previous_class);
+        g_activity_include_inactive.store(previous_include);
+        g_activity_start_ms.store(previous_start);
+    }
+
+    static const char* safe_class_name(void* klass) {
+        const char* class_name = "unknown";
+        __try {
+            if (klass && il2cpp::class_get_name)
+                class_name = il2cpp::class_get_name(klass);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            class_name = "unknown";
+        }
+        return class_name ? class_name : "unknown";
+    }
 
     static void publish_player_snapshot(const std::vector<PlayerInfo>& players) {
         g_player_count = (int32_t)players.size();
@@ -223,6 +287,34 @@ namespace unity {
 
         if (g_tracked_mobs.size() < 128)
             g_tracked_mobs.push_back(ptr);
+    }
+
+    static void track_game_mode_pointer(void* game_mode) {
+        if (!game_mode)
+            return;
+
+        uintptr_t ptr = (uintptr_t)game_mode;
+        for (uintptr_t tracked : g_tracked_game_modes) {
+            if (tracked == ptr)
+                return;
+        }
+
+        if (g_tracked_game_modes.size() < 8)
+            g_tracked_game_modes.push_back(ptr);
+    }
+
+    static void track_chams_enemy_mob_pointer(void* mob) {
+        if (!mob)
+            return;
+
+        uintptr_t ptr = (uintptr_t)mob;
+        for (uintptr_t tracked : g_chams_enemy_mobs) {
+            if (tracked == ptr)
+                return;
+        }
+
+        if (g_chams_enemy_mobs.size() < 128)
+            g_chams_enemy_mobs.push_back(ptr);
     }
 
     static bool contains_rendered_ptr(uintptr_t* rendered, int rendered_count, uintptr_t ptr) {
@@ -308,9 +400,15 @@ namespace unity {
         out_len = 0;
         if (!klass) return nullptr;
 
+        const char* class_name = safe_class_name(klass);
+
         void* method = nullptr;
         bool use_include_param = false;
-        if (include_inactive) {
+        bool use_find_by_type = false;
+        method = il2cpp::class_get_method_from_name(g_object_class, "FindObjectsByType", 3);
+        if (method) {
+            use_find_by_type = true;
+        } else if (include_inactive) {
             method = il2cpp::class_get_method_from_name(g_object_class, "FindObjectsOfType", 2);
             use_include_param = (method != nullptr);
         }
@@ -326,12 +424,42 @@ namespace unity {
         if (!type_obj) return nullptr;
 
         bool include = include_inactive;
-        void* params[2] = { type_obj, &include };
+        int inactive_mode = include_inactive ? 1 : 0; // UnityEngine.FindObjectsInactive
+        int sort_mode = 0;                            // UnityEngine.FindObjectsSortMode.None
+        void* by_type_params[3] = { type_obj, &inactive_mode, &sort_mode };
+        void* of_type_params[2] = { type_obj, &include };
         void* exception = nullptr;
-        void* arr = il2cpp::runtime_invoke(method, nullptr, use_include_param ? params : &params[0], &exception);
+        unsigned long long start_ms = GetTickCount64();
+        void* arr = nullptr;
+        const char* previous_op = nullptr;
+        const char* previous_class = nullptr;
+        int previous_include = 0;
+        unsigned long long previous_start = 0;
+
+        begin_unity_activity(use_find_by_type ? "FindObjectsByType" : "FindObjectsOfType",
+            class_name, include_inactive, &previous_op, &previous_class, &previous_include, &previous_start);
+        __try {
+            arr = il2cpp::runtime_invoke(method, nullptr,
+                use_find_by_type ? by_type_params : (use_include_param ? of_type_params : &of_type_params[0]), &exception);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            arr = nullptr;
+            exception = (void*)1;
+        }
+        restore_unity_activity(previous_op, previous_class, previous_include, previous_start);
+        unsigned long long elapsed_ms = GetTickCount64() - start_ms;
+        if (exception)
+            return nullptr;
         if (!arr) return nullptr;
 
         out_len = il2cpp::array_length(arr);
+        if (elapsed_ms >= 100) {
+            printf("[freeze] Slow Unity object scan: %s(%s, inactive=%s) count=%d took %llums\n",
+                use_find_by_type ? "FindObjectsByType" : "FindObjectsOfType",
+                class_name ? class_name : "unknown",
+                include_inactive ? "yes" : "no",
+                out_len,
+                elapsed_ms);
+        }
         return arr;
     }
 
@@ -348,6 +476,76 @@ namespace unity {
         __try { len = il2cpp::array_length(arr); }
         __except(EXCEPTION_EXECUTE_HANDLER) { len = 0; }
         return len;
+    }
+
+    static void* safe_read_ptr(void* base, uintptr_t offset) {
+        void* value = nullptr;
+        if (!base)
+            return nullptr;
+        __try { value = *(void**)((uintptr_t)base + offset); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { value = nullptr; }
+        return value;
+    }
+
+    static bool safe_read_bool(void* base, uintptr_t offset, bool fallback = false) {
+        bool value = fallback;
+        if (!base)
+            return fallback;
+        __try { value = *(bool*)((uintptr_t)base + offset); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { value = fallback; }
+        return value;
+    }
+
+    static int safe_read_int(void* base, uintptr_t offset, int fallback = 0) {
+        int value = fallback;
+        if (!base)
+            return fallback;
+        __try { value = *(int*)((uintptr_t)base + offset); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { value = fallback; }
+        return value;
+    }
+
+    static Vector3 safe_read_vector3(void* base, uintptr_t offset) {
+        Vector3 value = {};
+        if (!base)
+            return value;
+        __try { value = *(Vector3*)((uintptr_t)base + offset); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { value = {}; }
+        return value;
+    }
+
+    static bool safe_find_objects_of_type(void* klass, int32_t& count, bool include_inactive, void** out_arr) {
+        if (out_arr)
+            *out_arr = nullptr;
+        count = 0;
+        if (!klass || !out_arr)
+            return false;
+
+        __try { *out_arr = find_objects_of_type(klass, count, include_inactive); }
+        __except(EXCEPTION_EXECUTE_HANDLER) {
+            *out_arr = nullptr;
+            count = 0;
+            return false;
+        }
+        return *out_arr != nullptr;
+    }
+
+    static void** safe_managed_object_array_items(void* arr) {
+        void** elements = nullptr;
+        if (!arr)
+            return nullptr;
+        __try { elements = managed_object_array_items(arr); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
+        return elements;
+    }
+
+    static void* safe_array_element(void** elements, int index) {
+        void* value = nullptr;
+        if (!elements || index < 0)
+            return nullptr;
+        __try { value = elements[index]; }
+        __except(EXCEPTION_EXECUTE_HANDLER) { value = nullptr; }
+        return value;
     }
 
     static bool is_finite_vec3(const Vector3& v) {
@@ -867,6 +1065,24 @@ namespace unity {
         return g_player_mob_class;
     }
 
+    static void* get_move_component_class() {
+        if (!g_move_component_class) {
+            g_move_component_class = find_class_anywhere(
+                "Psa.Core.Modules.Movements.Services.Components.Implementation",
+                "MoveComponent");
+        }
+        return g_move_component_class;
+    }
+
+    static void* get_bot_mob_class() {
+        if (!g_bot_mob_class) {
+            g_bot_mob_class = find_class_anywhere(
+                "Psa.Core.Modules.Bots",
+                "BotMob");
+        }
+        return g_bot_mob_class;
+    }
+
     static void* get_game_mode_class() {
         if (!g_game_mode_class) {
             g_game_mode_class = find_class_anywhere(
@@ -968,6 +1184,11 @@ namespace unity {
     }
 
     static void refresh_scene_camera_cache() {
+        static DWORD last_scene_camera_scan_ms = 0;
+        DWORD interval = (g_cached_fallback_camera || g_brain_ptr) ? 5000 : 2000;
+        if (!scan_interval_elapsed(last_scene_camera_scan_ms, interval))
+            return;
+
         void* scene_camera_class = get_scene_camera_class();
         if (!scene_camera_class)
             return;
@@ -1014,7 +1235,7 @@ namespace unity {
 
         int32_t count = 0;
         void* arr = nullptr;
-        __try { arr = find_objects_of_type(game_mode_class, count, true); }
+        __try { arr = find_objects_of_type(game_mode_class, count, false); }
         __except(EXCEPTION_EXECUTE_HANDLER) { return; }
         if (!arr || count <= 0)
             return;
@@ -1760,6 +1981,20 @@ namespace unity {
         return g_kinematic_projectile_view_class;
     }
 
+    static Vector3 safe_get_transform_position(void* transform) {
+        Vector3 pos = {};
+        __try { pos = get_transform_position(transform); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+        return pos;
+    }
+
+    static Vector3 safe_get_object_position(void* obj) {
+        Vector3 pos = {};
+        __try { pos = get_object_position(obj); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+        return pos;
+    }
+
     std::vector<WorldObjectInfo> get_grenades() {
         std::vector<WorldObjectInfo> grenades;
         g_grenade_count = 0;
@@ -1771,21 +2006,17 @@ namespace unity {
         void* projectile_view_class = get_kinematic_projectile_view_class();
         int32_t count = 0;
         void* arr = nullptr;
-        __try { arr = find_objects_of_type(projectile_view_class, count, false); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { arr = nullptr; count = 0; }
+        safe_find_objects_of_type(projectile_view_class, count, false, &arr);
 
         void** elements = nullptr;
         if (arr && count > 0) {
-            __try { elements = managed_object_array_items(arr); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
+            elements = safe_managed_object_array_items(arr);
         }
         if (count > 64)
             count = 64;
 
         for (int32_t i = 0; elements && i < count; i++) {
-            void* view = nullptr;
-            __try { view = elements[i]; }
-            __except(EXCEPTION_EXECUTE_HANDLER) { view = nullptr; }
+            void* view = safe_array_element(elements, i);
             if (!view)
                 continue;
 
@@ -1794,29 +2025,19 @@ namespace unity {
                 continue;
 
             Vector3 pos = {};
-            __try { pos = get_object_position(view); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+            pos = safe_get_object_position(view);
 
             if (!has_position_value(pos)) {
-                void* transform = nullptr;
-                __try { transform = *(void**)((uintptr_t)view + 0x178); } // KinematicProjectileView._transform
-                __except(EXCEPTION_EXECUTE_HANDLER) { transform = nullptr; }
+                void* transform = safe_read_ptr(view, 0x178); // KinematicProjectileView._transform
                 if (transform) {
-                    __try { pos = get_transform_position(transform); }
-                    __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+                    pos = safe_get_transform_position(transform);
                 }
             }
 
             if (!is_reasonable_position(pos))
                 continue;
 
-            std::string name;
-            __try { name = get_object_name(view); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { name.clear(); }
-            if (name.empty() || name == "unknown" || name == "null")
-                name = "Grenade";
-            if (name.find("Kinematic") != std::string::npos || name.find("Projectile") != std::string::npos)
-                name = "Grenade";
+            std::string name = "Grenade";
 
             WorldObjectInfo info;
             info.name = name;
@@ -1923,6 +2144,360 @@ namespace unity {
         return pos;
     }
 
+    static void* get_player_mob_bot_player(void* mob) {
+        return safe_read_ptr(mob, 0x750); // PlayerMob._BotPlayer
+    }
+
+    static void* get_player_mob_game_mode(void* mob) {
+        return safe_read_ptr(mob, 0x7C0); // PlayerMob._gameMode
+    }
+
+    static bool is_player_mob_bot(void* mob) {
+        if (!mob)
+            return false;
+
+        // dump.cs: PlayerMob._IsBot is a NetworkBool at 0x74C, with _value at +0.
+        if (safe_read_int(mob, 0x74C, 0) != 0)
+            return true;
+
+        return get_player_mob_bot_player(mob) != nullptr;
+    }
+
+    static void* get_bot_mob_player_mob(void* bot) {
+        return safe_read_ptr(bot, 0xB0); // BotMob._Mob
+    }
+
+    static Vector3 get_bot_move_component_position(void* move) {
+        Vector3 pos = {};
+        if (!move)
+            return pos;
+
+        pos = safe_get_object_position(move);
+        if (has_position_value(pos))
+            return pos;
+
+        void* ai_path = safe_read_ptr(move, 0x60); // BotMoveComponent._aiPath
+        if (ai_path) {
+            pos = safe_get_object_position(ai_path);
+            if (has_position_value(pos))
+                return pos;
+        }
+
+        void* klass = get_object_runtime_class(move, nullptr);
+        if (!g_cached_get_bot_move_position_method && klass)
+            g_cached_get_bot_move_position_method = class_get_method_recursive(klass, "get_Position", 0);
+        if (g_cached_get_bot_move_position_method) {
+            bool ok = false;
+            __try { pos = invoke_vector3_method(move, g_cached_get_bot_move_position_method, &ok); }
+            __except(EXCEPTION_EXECUTE_HANDLER) {
+                ok = false;
+                pos = {};
+            }
+            if (ok && has_position_value(pos))
+                return pos;
+        }
+
+        pos = safe_read_vector3(move, 0x98); // BotMoveComponent._previousPoint
+        if (has_position_value(pos))
+            return pos;
+
+        void* triggers = safe_read_ptr(move, 0x108); // BotMoveComponent._triggers
+        if (triggers) {
+            pos = safe_get_object_position(triggers);
+            if (has_position_value(pos))
+                return pos;
+        }
+
+        return pos;
+    }
+
+    static Vector3 get_bot_mob_position(void* bot) {
+        Vector3 pos = {};
+        if (!bot)
+            return pos;
+
+        pos = safe_get_object_position(bot);
+        if (has_position_value(pos))
+            return pos;
+
+        void* bot_move = safe_read_ptr(bot, 0x180); // BotMob.<BotMove>k__BackingField
+        if (bot_move) {
+            pos = get_bot_move_component_position(bot_move);
+            if (has_position_value(pos))
+                return pos;
+        }
+
+        void* player_mob = get_bot_mob_player_mob(bot);
+        if (player_mob) {
+            pos = safe_get_object_position(player_mob);
+            if (has_position_value(pos))
+                return pos;
+
+            void* move = safe_read_ptr(player_mob, 0x7A0); // PlayerMob._moveComponent
+            if (move) {
+                pos = get_move_component_position(move);
+                if (has_position_value(pos))
+                    return pos;
+            }
+
+            void* entity = safe_read_ptr(player_mob, 0x98); // EcsComponentNet.<Entity>
+            if (entity) {
+                pos = safe_get_object_position(entity);
+                if (has_position_value(pos))
+                    return pos;
+            }
+        }
+
+        void* entity = safe_read_ptr(bot, 0x98); // EcsComponentNet.<Entity>
+        if (entity)
+            pos = safe_get_object_position(entity);
+
+        return pos;
+    }
+
+    static std::string get_bot_mob_name(void* bot) {
+        std::string name = read_managed_string(safe_read_ptr(bot, 0x138)); // BotMob._Nickname
+        if (!name.empty())
+            return name;
+
+        return read_managed_string(safe_read_ptr(bot, 0x1A8)); // BotMob.cache_Nickname
+    }
+
+    static int get_bot_mob_id(void* bot) {
+        return safe_read_int(bot, 0xC8, 0); // BotMob._BotId
+    }
+
+    static int get_cached_bot_team_number(int bot_id) {
+        if (bot_id == 0)
+            return -1;
+
+        for (int i = 0; i < g_bot_team_count; i++) {
+            if (g_bot_team_ids[i] == bot_id)
+                return g_bot_team_numbers[i];
+        }
+        return -1;
+    }
+
+    static void cache_bot_team_number(int bot_id, int team_number) {
+        if (bot_id == 0 || team_number < 0)
+            return;
+
+        for (int i = 0; i < g_bot_team_count; i++) {
+            if (g_bot_team_ids[i] == bot_id) {
+                g_bot_team_numbers[i] = team_number;
+                return;
+            }
+        }
+
+        if (g_bot_team_count >= 64)
+            return;
+
+        g_bot_team_ids[g_bot_team_count] = bot_id;
+        g_bot_team_numbers[g_bot_team_count] = team_number;
+        g_bot_team_count++;
+    }
+
+    static int get_bot_mob_team_number(void* bot) {
+        if (!bot)
+            return -1;
+
+        return get_cached_bot_team_number(get_bot_mob_id(bot));
+    }
+
+    static int get_player_mob_bot_team_number(void* mob) {
+        return get_bot_mob_team_number(get_player_mob_bot_player(mob));
+    }
+
+    static bool relation_to_team_info(int relation, bool* is_teammate) {
+        // dump.cs: TeamRelation.Friendly = 1, TeamRelation.Enemy = 2.
+        if (relation == 1 || relation == 2) {
+            if (is_teammate)
+                *is_teammate = (relation == 1);
+            return true;
+        }
+        return false;
+    }
+
+    static bool get_player_visuals_team_info(void* player_visuals, bool* is_teammate) {
+        if (is_teammate)
+            *is_teammate = false;
+        if (!player_visuals || !il2cpp::module_base || !RVA_PlayerVisuals_get_PlayerTeamRelation ||
+            (il2cpp::module_size && RVA_PlayerVisuals_get_PlayerTeamRelation >= il2cpp::module_size))
+            return false;
+
+        int relation = 0;
+        __try {
+            using team_fn = int (*)(void*, void*);
+            auto fn = (team_fn)(il2cpp::module_base + RVA_PlayerVisuals_get_PlayerTeamRelation);
+            relation = fn(player_visuals, nullptr);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+        return relation_to_team_info(relation, is_teammate);
+    }
+
+    static bool get_ecs_component_network_id(void* component, unsigned int* out_id) {
+        if (out_id)
+            *out_id = 0;
+        if (!component || !il2cpp::module_base || !RVA_EcsComponentNet_get_Id ||
+            (il2cpp::module_size && RVA_EcsComponentNet_get_Id >= il2cpp::module_size))
+            return false;
+
+        unsigned int id = 0;
+        __try {
+            using id_fn = unsigned int (*)(void*, void*);
+            auto fn = (id_fn)(il2cpp::module_base + RVA_EcsComponentNet_get_Id);
+            id = fn(component, nullptr);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+
+        if (id == 0)
+            return false;
+        if (out_id)
+            *out_id = id;
+        return true;
+    }
+
+    static bool get_game_mode_team_relation_info(void* game_mode, unsigned int network_id, bool* is_teammate) {
+        if (is_teammate)
+            *is_teammate = false;
+        if (!game_mode || network_id == 0)
+            return false;
+
+        void* klass = get_object_runtime_class(game_mode, get_game_mode_class());
+        if (!g_cached_game_mode_get_team_relation_method && klass)
+            g_cached_game_mode_get_team_relation_method = class_get_method_recursive(klass, "GetTeamRelation", 1);
+        if (!g_cached_game_mode_get_team_relation_method)
+            return false;
+
+        int relation = 0;
+        void* exception = nullptr;
+        void* result = nullptr;
+        __try {
+            void* params[1] = { &network_id };
+            result = il2cpp::runtime_invoke(g_cached_game_mode_get_team_relation_method, game_mode, params, &exception);
+            if (!result || exception)
+                return false;
+
+            void* unboxed = il2cpp::object_unbox(result);
+            if (!unboxed)
+                return false;
+            relation = *(int*)unboxed;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+
+        return relation_to_team_info(relation, is_teammate);
+    }
+
+    static bool apply_game_mode_relation_team_info(PlayerInfo& pi, void* game_mode, void* mob, void* bot) {
+        bool teammate = false;
+        unsigned int network_id = 0;
+
+        if (mob && get_ecs_component_network_id(mob, &network_id) &&
+            get_game_mode_team_relation_info(game_mode, network_id, &teammate)) {
+            pi.team_known = true;
+            pi.is_teammate = teammate;
+            return true;
+        }
+
+        if (bot && get_ecs_component_network_id(bot, &network_id) &&
+            get_game_mode_team_relation_info(game_mode, network_id, &teammate)) {
+            pi.team_known = true;
+            pi.is_teammate = teammate;
+            return true;
+        }
+
+        return false;
+    }
+
+    static bool apply_known_game_mode_relation_team_info(PlayerInfo& pi, void* mob, void* bot) {
+        void* game_mode = get_player_mob_game_mode(mob);
+        if (apply_game_mode_relation_team_info(pi, game_mode, mob, bot))
+            return true;
+
+        for (uintptr_t tracked : g_tracked_game_modes) {
+            if (apply_game_mode_relation_team_info(pi, (void*)tracked, mob, bot))
+                return true;
+        }
+
+        return false;
+    }
+
+    static bool get_player_mob_team_info(void* mob, bool* is_teammate);
+
+    static int get_cached_mob_team_number(void* mob) {
+        if (!mob)
+            return -1;
+
+        uintptr_t mob_ptr = (uintptr_t)mob;
+        for (int i = 0; i < g_mob_team_count; i++) {
+            if (g_mob_team_ptrs[i] == mob_ptr)
+                return g_mob_team_numbers[i];
+        }
+        return -1;
+    }
+
+    static void cache_mob_team_number(void* mob, int team_number) {
+        if (!mob || team_number < 0)
+            return;
+
+        uintptr_t mob_ptr = (uintptr_t)mob;
+        for (int i = 0; i < g_mob_team_count; i++) {
+            if (g_mob_team_ptrs[i] == mob_ptr) {
+                g_mob_team_numbers[i] = team_number;
+                return;
+            }
+        }
+
+        if (g_mob_team_count >= 128)
+            return;
+
+        g_mob_team_ptrs[g_mob_team_count] = mob_ptr;
+        g_mob_team_numbers[g_mob_team_count] = team_number;
+        g_mob_team_count++;
+    }
+
+    static bool apply_cached_mob_team_info(PlayerInfo& pi, void* mob) {
+        int mob_team = get_cached_mob_team_number(mob);
+        if (g_local_team_number < 0 || mob_team < 0)
+            return false;
+
+        pi.team_known = true;
+        pi.is_teammate = (mob_team == g_local_team_number);
+        return true;
+    }
+
+    static void apply_bot_identity(PlayerInfo& pi, void* bot, void* mob) {
+        pi.name = "BOT";
+
+        if (apply_cached_mob_team_info(pi, mob))
+            return;
+
+        int bot_team = get_bot_mob_team_number(bot);
+        if (bot_team < 0 && mob)
+            bot_team = get_player_mob_bot_team_number(mob);
+
+        if (g_local_team_number >= 0 && bot_team >= 0) {
+            pi.team_known = true;
+            pi.is_teammate = (bot_team == g_local_team_number);
+            return;
+        }
+
+        if (apply_known_game_mode_relation_team_info(pi, mob, bot))
+            return;
+
+        bool hp_bar_teammate = false;
+        if (mob && get_player_mob_team_info(mob, &hp_bar_teammate) && hp_bar_teammate) {
+            pi.team_known = true;
+            pi.is_teammate = true;
+        } else if (!pi.team_known) {
+            pi.team_known = false;
+            pi.is_teammate = false;
+        }
+    }
+
     static Vector3 get_player_mob_position(void* mob) {
         Vector3 pos = {};
         if (!mob) return pos;
@@ -1947,6 +2522,13 @@ namespace unity {
         if (entity) {
             __try { pos = get_object_position(entity); }
             __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+            if (has_position_value(pos))
+                return pos;
+        }
+
+        void* bot = get_player_mob_bot_player(mob);
+        if (bot) {
+            pos = get_bot_mob_position(bot);
             if (has_position_value(pos))
                 return pos;
         }
@@ -1993,6 +2575,12 @@ namespace unity {
         __except(EXCEPTION_EXECUTE_HANDLER) { hp_bar = nullptr; }
         if (!hp_bar)
             return false;
+
+        void* player_visuals = nullptr;
+        __try { player_visuals = *(void**)((uintptr_t)hp_bar + 0x158); } // AvatarHpBar._playerVisuals
+        __except(EXCEPTION_EXECUTE_HANDLER) { player_visuals = nullptr; }
+        if (get_player_visuals_team_info(player_visuals, is_teammate))
+            return true;
 
         bool ally = false;
         __try { ally = *(bool*)((uintptr_t)hp_bar + 0x1C1); } // AvatarHpBar._isAlly
@@ -2237,6 +2825,103 @@ namespace unity {
         return get_player_mob_dead_state_only(mob);
     }
 
+    static bool safe_get_player_mob_is_dead(void* mob, bool fallback = true) {
+        bool value = fallback;
+        __try { value = get_player_mob_is_dead(mob); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { value = fallback; }
+        return value;
+    }
+
+    static Vector3 safe_get_player_mob_position(void* mob) {
+        Vector3 pos = {};
+        __try { pos = get_player_mob_position(mob); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+        return pos;
+    }
+
+    static Vector3 safe_get_move_component_position(void* move) {
+        Vector3 pos = {};
+        __try { pos = get_move_component_position(move); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+        return pos;
+    }
+
+    static bool safe_get_player_mob_health_info(void* mob, float* health, float* max_health) {
+        bool ok = false;
+        __try { ok = get_player_mob_health_info(mob, health, max_health); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        return ok;
+    }
+
+    static bool safe_get_player_mob_team_info(void* mob, bool* is_teammate) {
+        bool known = false;
+        __try { known = get_player_mob_team_info(mob, is_teammate); }
+        __except(EXCEPTION_EXECUTE_HANDLER) {
+            known = false;
+            if (is_teammate)
+                *is_teammate = false;
+        }
+        return known;
+    }
+
+    static void* safe_get_player_avatar_from_pno(void* pno) {
+        void* avatar = nullptr;
+        __try { avatar = get_player_avatar_from_pno(pno); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { avatar = nullptr; }
+        return avatar;
+    }
+
+    static void* safe_get_camera_component_from_avatar(void* avatar) {
+        void* component = nullptr;
+        __try { component = get_camera_component_from_avatar(avatar); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { component = nullptr; }
+        return component;
+    }
+
+    static bool safe_get_player_camera_component_position(void* camera_component, Vector3* out_pos) {
+        bool ok = false;
+        __try { ok = get_player_camera_component_position(camera_component, out_pos); }
+        __except(EXCEPTION_EXECUTE_HANDLER) {
+            ok = false;
+            if (out_pos)
+                *out_pos = {};
+        }
+        return ok;
+    }
+
+    static bool safe_pno_has_input_authority(void* pno) {
+        bool has_input_auth = false;
+        __try { has_input_auth = pno_has_input_authority(pno); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { has_input_auth = false; }
+        return has_input_auth;
+    }
+
+    static void* safe_class_get_method_recursive(void* klass, const char* name, int argc) {
+        void* method = nullptr;
+        __try { method = class_get_method_recursive(klass, name, argc); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { method = nullptr; }
+        return method;
+    }
+
+    static bool safe_invoke_bool_method(void* obj, void* method) {
+        bool value = false;
+        __try { value = invoke_bool_method(obj, method); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { value = false; }
+        return value;
+    }
+
+    static void* safe_get_local_player_mob_from_game_mode(void* game_mode) {
+        void* mob = nullptr;
+        __try { mob = get_local_player_mob_from_game_mode(game_mode); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { mob = nullptr; }
+        return mob;
+    }
+
+    static void safe_refresh_scene_camera_cache() {
+        __try { refresh_scene_camera_cache(); }
+        __except(EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
     static PlayerInfo make_player_info(const std::string& name, const Vector3& pos, uintptr_t object_ptr,
         uintptr_t avatar_ptr, int source_type) {
         Vector3 head = pos;
@@ -2258,16 +2943,32 @@ namespace unity {
         pi.is_dead = false;
 
         void* mob = avatar_ptr ? (void*)avatar_ptr : (source_type == 2 ? (void*)object_ptr : nullptr);
+        void* bot = source_type == 5 ? (void*)object_ptr : nullptr;
         if (mob) {
-            pi.is_dead = get_player_mob_is_dead(mob);
-            __try { get_player_mob_health_info(mob, &pi.health, &pi.max_health); }
-            __except(EXCEPTION_EXECUTE_HANDLER) {}
-            __try { pi.team_known = get_player_mob_team_info(mob, &pi.is_teammate); }
-            __except(EXCEPTION_EXECUTE_HANDLER) {
-                pi.team_known = false;
-                pi.is_teammate = false;
+            if (!bot)
+                bot = get_player_mob_bot_player(mob);
+
+            bool is_bot = bot || is_player_mob_bot(mob);
+            pi.is_dead = safe_get_player_mob_is_dead(mob, is_bot ? false : true);
+            bool health_ok = safe_get_player_mob_health_info(mob, &pi.health, &pi.max_health);
+            apply_cached_mob_team_info(pi, mob);
+            if (!pi.team_known) {
+                bool teammate = false;
+                if (safe_get_player_mob_team_info(mob, &teammate) && teammate) {
+                    pi.team_known = true;
+                    pi.is_teammate = true;
+                }
+            }
+            if (is_bot) {
+                apply_bot_identity(pi, bot, mob);
+                if (!health_ok)
+                    pi.is_dead = false;
             }
             pi.is_local = (mob == g_local_player_avatar);
+        } else if (bot) {
+            apply_bot_identity(pi, bot, nullptr);
+            pi.is_dead = false;
+            pi.is_local = false;
         }
         return pi;
     }
@@ -2293,6 +2994,13 @@ namespace unity {
             __try { dict = *(void**)((uintptr_t)game_mode + 0x130); } // GameMode._playerMobs
             __except(EXCEPTION_EXECUTE_HANDLER) { dict = nullptr; }
         }
+        return dict;
+    }
+
+    static void* safe_get_game_mode_mobs_dictionary(void* game_mode) {
+        void* dict = nullptr;
+        __try { dict = get_game_mode_mobs_dictionary(game_mode); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { dict = nullptr; }
         return dict;
     }
 
@@ -2354,6 +3062,69 @@ namespace unity {
         return collect_ptr_values_from_dictionary(dict, out_mobs, max_mobs);
     }
 
+    static int safe_collect_ptr_values_from_dictionary(void* dict, void** out_values, int max_values) {
+        int count = 0;
+        __try { count = collect_ptr_values_from_dictionary(dict, out_values, max_values); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { count = 0; }
+        return count;
+    }
+
+    static int safe_collect_player_mobs_from_dictionary(void* dict, void** out_mobs, int max_mobs) {
+        int count = 0;
+        __try { count = collect_player_mobs_from_dictionary(dict, out_mobs, max_mobs); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { count = 0; }
+        return count;
+    }
+
+    static int collect_game_mode_bots_reserve(void* game_mode, void** out_bots, int max_bots) {
+        if (!game_mode || !out_bots || max_bots <= 0)
+            return 0;
+
+        void* bots_arr = safe_read_ptr(game_mode, 0xA30); // GameMode.<BotsReserve>k__BackingField
+        if (!bots_arr)
+            return 0;
+
+        int arr_len = managed_array_length_safe(bots_arr);
+        if (arr_len <= 0)
+            return 0;
+        if (arr_len > 64)
+            arr_len = 64;
+
+        void** items = managed_object_array_items(bots_arr);
+        if (!items)
+            return 0;
+
+        int found = 0;
+        for (int i = 0; i < arr_len && found < max_bots; i++) {
+            void* bot = nullptr;
+            __try { bot = items[i]; }
+            __except(EXCEPTION_EXECUTE_HANDLER) { bot = nullptr; }
+            if (!bot)
+                continue;
+
+            bool dup = false;
+            for (int j = 0; j < found; j++) {
+                if (out_bots[j] == bot) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup)
+                continue;
+
+            out_bots[found++] = bot;
+        }
+
+        return found;
+    }
+
+    static int safe_collect_game_mode_bots_reserve(void* game_mode, void** out_bots, int max_bots) {
+        int count = 0;
+        __try { count = collect_game_mode_bots_reserve(game_mode, out_bots, max_bots); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { count = 0; }
+        return count;
+    }
+
     static void* get_game_mode_team_models_dictionary(void* game_mode) {
         if (!game_mode)
             return nullptr;
@@ -2371,6 +3142,20 @@ namespace unity {
         __try { team_number = *(int*)((uintptr_t)team + 0x10); } // GameModeTeam.<Team>
         __except(EXCEPTION_EXECUTE_HANDLER) { team_number = -1; }
         return team_number;
+    }
+
+    static bool is_game_mode_team_mine(void* team) {
+        if (!team)
+            return false;
+
+        void* klass = get_object_runtime_class(team);
+        if (!g_cached_game_mode_team_is_mine_method && klass)
+            g_cached_game_mode_team_is_mine_method = class_get_method_recursive(klass, "get_IsMine", 0);
+
+        if (!g_cached_game_mode_team_is_mine_method)
+            return false;
+
+        return safe_invoke_bool_method(team, g_cached_game_mode_team_is_mine_method);
     }
 
     static int collect_game_mode_team_players(void* team, void** out_players, int max_players) {
@@ -2431,29 +3216,31 @@ namespace unity {
     }
 
     static int get_game_mode_player_ref(void* player_data) {
-        int player_ref = 0;
-        if (!player_data)
-            return player_ref;
-        __try { player_ref = *(int*)((uintptr_t)player_data + 0x40); } // GameModePlayer.<PlayerRef>
-        __except(EXCEPTION_EXECUTE_HANDLER) { player_ref = 0; }
-        return player_ref;
+        return safe_read_int(player_data, 0x40, 0); // GameModePlayer.<PlayerRef>
     }
 
     static bool is_game_mode_player_mine(void* player_data) {
-        bool is_mine = false;
-        if (!player_data)
-            return false;
-        __try { is_mine = *(bool*)((uintptr_t)player_data + 0x48); } // GameModePlayer.<IsMine>
-        __except(EXCEPTION_EXECUTE_HANDLER) { is_mine = false; }
-        return is_mine;
+        return safe_read_bool(player_data, 0x48, false); // GameModePlayer.<IsMine>
+    }
+
+    static bool is_game_mode_player_bot(void* player_data) {
+        return safe_read_bool(player_data, 0x50, false); // GameModePlayer.<IsBot>
+    }
+
+    static int get_game_mode_player_bot_id(void* player_data) {
+        return safe_read_int(player_data, 0x54, 0); // GameModePlayer.<BotId>
+    }
+
+    static int get_game_mode_player_team_number(void* player_data) {
+        void* team = safe_read_ptr(player_data, 0x58); // GameModePlayer._team
+        int team_number = get_game_mode_team_number(team);
+        return team_number;
     }
 
     static std::string get_game_mode_player_name(void* player_data) {
         if (!player_data)
             return "";
-        void* str = nullptr;
-        __try { str = *(void**)((uintptr_t)player_data + 0x30); } // GameModePlayer.<Name>
-        __except(EXCEPTION_EXECUTE_HANDLER) { str = nullptr; }
+        void* str = safe_read_ptr(player_data, 0x30); // GameModePlayer.<Name>
         return read_managed_string(str);
     }
 
@@ -2490,13 +3277,50 @@ namespace unity {
         return nullptr;
     }
 
+    static PlayerInfo* find_player_info_near_position(std::vector<PlayerInfo>& players, const Vector3& pos) {
+        if (!has_position_value(pos))
+            return nullptr;
+
+        for (auto& player : players) {
+            if (!player.is_valid || !has_position_value(player.position))
+                continue;
+
+            if ((player.position - pos).magnitude() <= 0.35f)
+                return &player;
+        }
+        return nullptr;
+    }
+
+    static void merge_known_team_info(PlayerInfo& dst, const PlayerInfo& src) {
+        if (src.team_known) {
+            dst.team_known = true;
+            dst.is_teammate = src.is_teammate;
+        }
+        dst.is_local = dst.is_local || src.is_local;
+        dst.is_dead = dst.is_dead && src.is_dead;
+    }
+
     static void apply_game_mode_team_info(PlayerInfo& player, const std::string& name,
         bool team_known, bool is_teammate, bool is_local) {
+        bool is_bot_entry = player.name == "BOT" || name == "BOT";
         if (!name.empty())
-            player.name = name;
+            player.name = is_bot_entry ? "BOT" : name;
         if (team_known) {
             player.team_known = true;
             player.is_teammate = is_teammate;
+        } else if (player.avatar_ptr) {
+            apply_cached_mob_team_info(player, (void*)player.avatar_ptr);
+        }
+        if (is_bot_entry && player.avatar_ptr) {
+            bool hp_bar_teammate = false;
+            if (!player.team_known && get_player_mob_team_info((void*)player.avatar_ptr, &hp_bar_teammate)) {
+                if (hp_bar_teammate) {
+                    team_known = true;
+                    is_teammate = true;
+                    player.team_known = true;
+                    player.is_teammate = true;
+                }
+            }
         }
         if (is_local)
             player.is_local = true;
@@ -2509,22 +3333,29 @@ namespace unity {
             return;
 
         void* teams[16] = {};
-        int team_count = 0;
-        __try { team_count = collect_ptr_values_from_dictionary(team_dict, teams, 16); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { team_count = 0; }
+        int team_count = safe_collect_ptr_values_from_dictionary(team_dict, teams, 16);
         if (team_count <= 0)
             return;
 
         g_game_mode_team_count += team_count;
 
         int local_team = -1;
+        void* local_mob_from_game_mode = safe_get_local_player_mob_from_game_mode(game_mode);
         for (int ti = 0; ti < team_count; ti++) {
             void* team = teams[ti];
             int team_number = get_game_mode_team_number(team);
+            if (team_number >= 0 && is_game_mode_team_mine(team)) {
+                local_team = team_number;
+                break;
+            }
+
             void* team_players[32] = {};
             int team_player_count = collect_game_mode_team_players(team, team_players, 32);
             for (int pi = 0; pi < team_player_count; pi++) {
-                if (is_game_mode_player_mine(team_players[pi])) {
+                void* player_mob = get_player_avatar_from_game_mode_ref(
+                    game_mode, get_game_mode_player_ref(team_players[pi]));
+                if (is_game_mode_player_mine(team_players[pi]) ||
+                    (local_mob_from_game_mode && player_mob == local_mob_from_game_mode)) {
                     local_team = team_number;
                     break;
                 }
@@ -2532,6 +3363,15 @@ namespace unity {
             if (local_team >= 0)
                 break;
         }
+        if (local_team >= 0) {
+            if (g_local_team_number != local_team) {
+                g_bot_team_count = 0;
+                g_mob_team_count = 0;
+            }
+            g_local_team_number = local_team;
+        }
+
+        int effective_local_team = local_team >= 0 ? local_team : g_local_team_number;
 
         for (int ti = 0; ti < team_count; ti++) {
             void* team = teams[ti];
@@ -2545,60 +3385,339 @@ namespace unity {
                 if (!player_data)
                     continue;
 
+                int player_team_number = get_game_mode_player_team_number(player_data);
+                int effective_player_team = player_team_number >= 0 ? player_team_number : team_number;
                 int player_ref = get_game_mode_player_ref(player_data);
                 bool is_mine = is_game_mode_player_mine(player_data);
+                bool is_bot_player = is_game_mode_player_bot(player_data);
+                int bot_id = is_bot_player ? get_game_mode_player_bot_id(player_data) : 0;
                 std::string name = get_game_mode_player_name(player_data);
+                std::string display_name = is_bot_player ? std::string("BOT") : name;
+
+                if (is_bot_player && bot_id != 0 && effective_player_team >= 0)
+                    cache_bot_team_number(bot_id, effective_player_team);
 
                 void* mob = nullptr;
-                __try { mob = get_player_avatar_from_game_mode_ref(game_mode, player_ref); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { mob = nullptr; }
+                mob = get_player_avatar_from_game_mode_ref(game_mode, player_ref);
                 if (!mob)
                     continue;
 
                 g_game_mode_team_mob_count++;
                 g_game_mode_mob_count++;
                 track_mob_pointer(mob);
+                cache_mob_team_number(mob, effective_player_team);
 
                 uintptr_t mob_ptr = (uintptr_t)mob;
-                bool team_known = local_team >= 0 && team_number >= 0;
-                bool is_teammate = team_known && team_number == local_team;
-                bool is_local = is_mine || mob == g_local_player_avatar;
+                bool team_known = effective_local_team >= 0 && effective_player_team >= 0;
+                bool is_teammate = team_known && effective_player_team == effective_local_team;
+                bool is_local = is_mine || mob == g_local_player_avatar ||
+                    (local_mob_from_game_mode && mob == local_mob_from_game_mode);
 
                 if (is_local) {
                     g_local_player_avatar = mob;
                     cache_local_player_from_mob(mob);
                 }
 
+                Vector3 pos = {};
+                pos = safe_get_player_mob_position(mob);
+                if (!has_position_value(pos))
+                    continue;
+
+                g_game_mode_mob_position_count++;
+
                 PlayerInfo* existing = find_player_info_for_mob(players, mob_ptr);
+                if (!existing)
+                    existing = find_player_info_near_position(players, pos);
                 if (existing) {
-                    apply_game_mode_team_info(*existing, name, team_known, is_teammate, is_local);
+                    apply_game_mode_team_info(*existing, display_name, team_known, is_teammate, is_local);
+                    mark_rendered_ptr(rendered, rendered_count, mob_ptr);
                     continue;
                 }
 
                 if (contains_rendered_ptr(rendered, rendered_count, mob_ptr))
                     continue;
 
-                Vector3 pos = {};
-                __try { pos = get_player_mob_position(mob); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
-                if (!has_position_value(pos))
-                    continue;
-
-                g_game_mode_mob_position_count++;
-
                 PlayerInfo info = make_player_info(
-                    name.empty() ? (std::string("GPlayer_") + std::to_string(player_ref)) : name,
+                    display_name.empty() ? (std::string("GPlayer_") + std::to_string(player_ref)) : display_name,
                     pos,
                     mob_ptr,
                     mob_ptr,
                     4);
                 if (!info.is_valid)
                     continue;
-                apply_game_mode_team_info(info, name, team_known, is_teammate, is_local);
+                apply_game_mode_team_info(info, display_name, team_known, is_teammate, is_local);
                 players.push_back(info);
                 mark_rendered_ptr(rendered, rendered_count, mob_ptr);
                 publish_player_snapshot(players);
             }
+        }
+    }
+
+    static bool refresh_player_info_entry(PlayerInfo& pi) {
+        void* mob = nullptr;
+        void* bot = pi.source_type == 5 ? (void*)pi.object_ptr : nullptr;
+        if (pi.avatar_ptr)
+            mob = (void*)pi.avatar_ptr;
+        else if (pi.source_type == 2)
+            mob = (void*)pi.object_ptr;
+        else if (pi.source_type == 1)
+            mob = safe_get_player_avatar_from_pno((void*)pi.object_ptr);
+        else if (pi.source_type == 3) {
+            mob = safe_read_ptr((void*)pi.object_ptr, 0x50); // PlayerMobBeh._playerMob
+            if (mob && !pi.avatar_ptr)
+                pi.avatar_ptr = (uintptr_t)mob;
+            if (!mob || !is_player_mob_bot(mob))
+                return false;
+        } else if (bot) {
+            mob = get_bot_mob_player_mob(bot);
+            if (mob && !pi.avatar_ptr)
+                pi.avatar_ptr = (uintptr_t)mob;
+        }
+
+        Vector3 pos = {};
+        if (mob)
+            pos = safe_get_player_mob_position(mob);
+
+        if (!has_position_value(pos) && pi.source_type == 3)
+            pos = safe_get_move_component_position((void*)pi.object_ptr);
+
+        if (!has_position_value(pos) && bot)
+            pos = get_bot_mob_position(bot);
+
+        if (!has_position_value(pos))
+            pos = safe_get_object_position((void*)pi.object_ptr);
+
+        if (has_position_value(pos)) {
+            pi.position = pos;
+            pi.head_position = pos;
+            pi.head_position.y += 1.7f;
+        }
+        pi.is_valid = has_position_value(pos);
+
+        if (mob) {
+            bool is_bot = bot || is_player_mob_bot(mob);
+            pi.is_dead = safe_get_player_mob_is_dead(mob, is_bot ? false : pi.is_dead);
+            bool health_ok = safe_get_player_mob_health_info(mob, &pi.health, &pi.max_health);
+            bool teammate = false;
+            bool team_known = safe_get_player_mob_team_info(mob, &teammate);
+            apply_cached_mob_team_info(pi, mob);
+            if (is_bot) {
+                apply_bot_identity(pi, bot, mob);
+                if (!health_ok)
+                    pi.is_dead = false;
+            } else if (!pi.team_known && team_known && teammate) {
+                pi.team_known = true;
+                pi.is_teammate = true;
+            }
+            pi.is_local = pi.is_local || (mob == g_local_player_avatar);
+        } else if (bot) {
+            apply_bot_identity(pi, bot, nullptr);
+            pi.is_dead = false;
+            pi.is_local = false;
+        }
+
+        return pi.is_valid;
+    }
+
+    static bool add_game_mode_players(void* game_mode, std::vector<PlayerInfo>& players,
+        uintptr_t* rendered, int& rendered_count) {
+        if (!game_mode)
+            return false;
+
+        size_t start_count = players.size();
+        track_game_mode_pointer(game_mode);
+        g_game_mode_count++;
+
+        void* local_mob = safe_get_local_player_mob_from_game_mode(game_mode);
+        if (local_mob) {
+            g_game_mode_local_mob_count++;
+            cache_local_player_from_mob(local_mob);
+            track_mob_pointer(local_mob);
+        }
+
+        add_game_mode_team_players(game_mode, players, rendered, rendered_count);
+
+        void* reserve_bots[64] = {};
+        int reserve_bot_count = safe_collect_game_mode_bots_reserve(game_mode, reserve_bots, 64);
+        for (int bi = 0; bi < reserve_bot_count; bi++) {
+            void* bot = reserve_bots[bi];
+            if (!bot)
+                continue;
+
+            uintptr_t bot_ptr = (uintptr_t)bot;
+            void* mob = get_bot_mob_player_mob(bot);
+            uintptr_t mob_ptr = (uintptr_t)mob;
+            if (contains_rendered_ptr(rendered, rendered_count, bot_ptr) ||
+                contains_rendered_ptr(rendered, rendered_count, mob_ptr))
+                continue;
+
+            g_bot_mob_count++;
+            if (mob)
+                track_mob_pointer(mob);
+
+            Vector3 pos = get_bot_mob_position(bot);
+            if (!has_position_value(pos) && mob)
+                pos = safe_get_player_mob_position(mob);
+            if (!has_position_value(pos))
+                continue;
+
+            g_bot_mob_position_count++;
+
+            PlayerInfo pi = make_player_info("BOT", pos, bot_ptr, mob_ptr, 5);
+            pi.is_local = false;
+            apply_bot_identity(pi, bot, mob);
+            if (!pi.is_valid)
+                continue;
+
+            PlayerInfo* existing = find_player_info_near_position(players, pos);
+            if (existing) {
+                merge_known_team_info(*existing, pi);
+                mark_rendered_ptr(rendered, rendered_count, bot_ptr);
+                mark_rendered_ptr(rendered, rendered_count, mob_ptr);
+                continue;
+            }
+
+            players.push_back(pi);
+            mark_rendered_ptr(rendered, rendered_count, bot_ptr);
+            mark_rendered_ptr(rendered, rendered_count, mob_ptr);
+            publish_player_snapshot(players);
+        }
+
+        void* mobs[64] = {};
+        void* mob_dict = safe_get_game_mode_mobs_dictionary(game_mode);
+        int mob_count = safe_collect_player_mobs_from_dictionary(mob_dict, mobs, 64);
+
+        for (int mi = 0; mi < mob_count; mi++) {
+            void* mob = mobs[mi];
+            if (!mob)
+                continue;
+
+            uintptr_t ptr = (uintptr_t)mob;
+            if (contains_rendered_ptr(rendered, rendered_count, ptr))
+                continue;
+
+            g_game_mode_mob_count++;
+            track_mob_pointer(mob);
+
+            Vector3 pos = safe_get_player_mob_position(mob);
+            if (!has_position_value(pos))
+                continue;
+
+            g_game_mode_mob_position_count++;
+
+            bool has_input_auth = (mob == g_local_player_avatar);
+            if (!has_input_auth)
+                has_input_auth = safe_pno_has_input_authority(mob);
+
+            PlayerInfo pi = make_player_info(std::string("GMob_") + std::to_string(mi), pos, ptr, ptr, 4);
+            pi.is_local = has_input_auth || pi.is_local;
+            if (!pi.is_valid)
+                continue;
+
+            PlayerInfo* existing = find_player_info_near_position(players, pos);
+            if (existing) {
+                merge_known_team_info(*existing, pi);
+                mark_rendered_ptr(rendered, rendered_count, ptr);
+                continue;
+            }
+
+            players.push_back(pi);
+            mark_rendered_ptr(rendered, rendered_count, ptr);
+            publish_player_snapshot(players);
+        }
+
+        return players.size() != start_count || local_mob != nullptr || reserve_bot_count > 0 || mob_count > 0;
+    }
+
+    static void append_chams_enemy_players(std::vector<PlayerInfo>& players,
+        uintptr_t* rendered, int& rendered_count) {
+        int index = 0;
+        for (uintptr_t mob_ptr : g_chams_enemy_mobs) {
+            void* mob = (void*)mob_ptr;
+            if (!mob)
+                continue;
+
+            bool relation_teammate = false;
+            bool relation_known = safe_get_player_mob_team_info(mob, &relation_teammate);
+
+            PlayerInfo* existing = find_player_info_for_mob(players, mob_ptr);
+            if (existing) {
+                bool cached_known = apply_cached_mob_team_info(*existing, mob);
+                if ((cached_known && existing->is_teammate) || (relation_known && relation_teammate)) {
+                    existing->team_known = true;
+                    existing->is_teammate = true;
+                    continue;
+                }
+
+                if (!cached_known) {
+                    existing->team_known = true;
+                    existing->is_teammate = false;
+                }
+                if (existing->team_known && !existing->is_teammate && is_player_mob_bot(mob))
+                    existing->name = "BOT";
+                continue;
+            }
+
+            if (contains_rendered_ptr(rendered, rendered_count, mob_ptr))
+                continue;
+
+            Vector3 pos = safe_get_player_mob_position(mob);
+            if (!has_position_value(pos))
+                continue;
+
+            bool is_bot = is_player_mob_bot(mob) || get_player_mob_bot_player(mob) != nullptr;
+            PlayerInfo pi = make_player_info(is_bot ? "BOT" : (std::string("Enemy_") + std::to_string(index)),
+                pos, mob_ptr, mob_ptr, 2);
+            bool cached_known = apply_cached_mob_team_info(pi, mob);
+            if ((cached_known && pi.is_teammate) || (relation_known && relation_teammate))
+                continue;
+
+            if (!cached_known) {
+                pi.team_known = true;
+                pi.is_teammate = false;
+            }
+            if (pi.is_teammate)
+                continue;
+
+            PlayerInfo* near_existing = find_player_info_near_position(players, pos);
+            if (near_existing) {
+                merge_known_team_info(*near_existing, pi);
+                mark_rendered_ptr(rendered, rendered_count, mob_ptr);
+                continue;
+            }
+
+            pi.is_local = mob == g_local_player_avatar;
+            pi.is_dead = safe_get_player_mob_is_dead(mob, is_bot ? false : pi.is_dead);
+            if (!pi.is_valid || pi.is_local)
+                continue;
+
+            players.push_back(pi);
+            mark_rendered_ptr(rendered, rendered_count, mob_ptr);
+            publish_player_snapshot(players);
+            index++;
+        }
+    }
+
+    static void append_cached_fallback_players(const std::vector<PlayerInfo>& cached,
+        std::vector<PlayerInfo>& players, uintptr_t* rendered, int& rendered_count) {
+        for (PlayerInfo pi : cached) {
+            if (pi.source_type != 3 && pi.source_type != 5)
+                continue;
+
+            if (contains_rendered_ptr(rendered, rendered_count, pi.object_ptr) ||
+                contains_rendered_ptr(rendered, rendered_count, pi.avatar_ptr))
+                continue;
+
+            if (!refresh_player_info_entry(pi) || !pi.is_valid)
+                continue;
+
+            if (contains_rendered_ptr(rendered, rendered_count, pi.object_ptr) ||
+                contains_rendered_ptr(rendered, rendered_count, pi.avatar_ptr))
+                continue;
+
+            players.push_back(pi);
+            mark_rendered_ptr(rendered, rendered_count, pi.object_ptr);
+            mark_rendered_ptr(rendered, rendered_count, pi.avatar_ptr);
         }
     }
 
@@ -2607,60 +3726,29 @@ namespace unity {
         if (!il2cpp::initialized || !g_ready)
             return refreshed;
 
+        std::vector<PlayerInfo> previous_cached = g_cached_players;
         uintptr_t rendered[128] = {};
         int rendered_count = 0;
 
-        for (PlayerInfo pi : g_cached_players) {
-            void* mob = nullptr;
-            if (pi.avatar_ptr)
-                mob = (void*)pi.avatar_ptr;
-            else if (pi.source_type == 2)
-                mob = (void*)pi.object_ptr;
-            else if (pi.source_type == 1) {
-                __try { mob = get_player_avatar_from_pno((void*)pi.object_ptr); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { mob = nullptr; }
-            }
+        for (uintptr_t game_mode_ptr : g_tracked_game_modes) {
+            add_game_mode_players((void*)game_mode_ptr, refreshed, rendered, rendered_count);
+        }
 
-            Vector3 pos = {};
-            if (mob) {
-                __try { pos = get_player_mob_position(mob); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
-            }
+        append_chams_enemy_players(refreshed, rendered, rendered_count);
+        append_cached_fallback_players(previous_cached, refreshed, rendered, rendered_count);
 
-            if (!has_position_value(pos) && pi.source_type == 3) {
-                __try { pos = get_move_component_position((void*)pi.object_ptr); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
-            }
+        if (!refreshed.empty()) {
+            publish_player_snapshot(refreshed);
+            return refreshed;
+        }
 
-            if (!has_position_value(pos)) {
-                void* obj = (void*)pi.object_ptr;
-                __try { pos = get_object_position(obj); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
-            }
-
-            if (has_position_value(pos)) {
-                pi.position = pos;
-                pi.head_position = pos;
-                pi.head_position.y += 1.7f;
-            }
-            pi.is_valid = has_position_value(pos);
-            if (mob) {
-                __try { pi.is_dead = get_player_mob_is_dead(mob); }
-                __except(EXCEPTION_EXECUTE_HANDLER) {}
-                __try { get_player_mob_health_info(mob, &pi.health, &pi.max_health); }
-                __except(EXCEPTION_EXECUTE_HANDLER) {}
-                bool teammate = false;
-                bool team_known = false;
-                __try { team_known = get_player_mob_team_info(mob, &teammate); }
-                __except(EXCEPTION_EXECUTE_HANDLER) {}
-                if (team_known) {
-                    pi.team_known = true;
-                    pi.is_teammate = teammate;
-                }
-                pi.is_local = pi.is_local || (mob == g_local_player_avatar);
-            }
+        for (PlayerInfo pi : previous_cached) {
+            PlayerInfo previous = pi;
+            if (!refresh_player_info_entry(pi) || !pi.is_valid)
+                pi = previous;
             refreshed.push_back(pi);
-            mark_rendered_ptr(rendered, rendered_count, pi.avatar_ptr ? pi.avatar_ptr : pi.object_ptr);
+            mark_rendered_ptr(rendered, rendered_count, pi.object_ptr);
+            mark_rendered_ptr(rendered, rendered_count, pi.avatar_ptr);
         }
 
         publish_player_snapshot(refreshed);
@@ -2676,6 +3764,7 @@ namespace unity {
 
     std::vector<PlayerInfo> get_players() {
         std::vector<PlayerInfo> players;
+        std::vector<PlayerInfo> previous_cached = g_cached_players;
         g_player_count = 0;
         g_pcc_avatar_count = 0;
         g_pcc_component_count = 0;
@@ -2687,6 +3776,8 @@ namespace unity {
         g_pno_object_count = 0;
         g_player_mob_count = 0;
         g_player_mob_position_count = 0;
+        g_bot_mob_count = 0;
+        g_bot_mob_position_count = 0;
         g_move_component_count = 0;
         g_move_component_position_count = 0;
         g_game_mode_mob_count = 0;
@@ -2731,21 +3822,25 @@ namespace unity {
         uintptr_t rendered[128] = {};
         int rendered_count = 0;
 
+        for (uintptr_t game_mode_ptr : g_tracked_game_modes) {
+            add_game_mode_players((void*)game_mode_ptr, players, rendered, rendered_count);
+        }
+
+        append_chams_enemy_players(players, rendered, rendered_count);
+
         int32_t count = 0;
         void* arr = nullptr;
         if (g_cached_classes[0].klass) {
-            __try { arr = find_objects_of_type(g_cached_classes[0].klass, count); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { arr = nullptr; count = 0; }
+            safe_find_objects_of_type(g_cached_classes[0].klass, count, false, &arr);
         }
 
         void** elements = nullptr;
         if (arr && count > 0) {
-            __try { elements = managed_object_array_items(arr); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { elements = nullptr; }
+            elements = safe_managed_object_array_items(arr);
         }
 
         for (int32_t i = 0; elements && i < count; i++) {
-            void* obj = elements[i];
+            void* obj = safe_array_element(elements, i);
             if (!obj) continue;
 
             uintptr_t ptr = (uintptr_t)obj;
@@ -2755,42 +3850,30 @@ namespace unity {
             void* camera_component = nullptr;
             Vector3 camera_pos = {};
             bool camera_pos_ok = false;
-            __try {
-                avatar = get_player_avatar_from_pno(obj);
-                if (avatar) {
-                    g_pcc_avatar_count++;
-                    track_mob_pointer(avatar);
-                }
-
-                camera_component = get_camera_component_from_avatar(avatar);
-                if (camera_component)
-                    g_pcc_component_count++;
-            } __except(EXCEPTION_EXECUTE_HANDLER) {
-                avatar = nullptr;
-                camera_component = nullptr;
+            avatar = safe_get_player_avatar_from_pno(obj);
+            if (avatar) {
+                g_pcc_avatar_count++;
+                track_mob_pointer(avatar);
             }
 
+            camera_component = safe_get_camera_component_from_avatar(avatar);
+            if (camera_component)
+                g_pcc_component_count++;
+
             if (camera_component) {
-                __try {
-                    camera_pos_ok = get_player_camera_component_position(camera_component, &camera_pos);
-                    if (camera_pos_ok)
-                        g_pcc_position_count++;
-                } __except(EXCEPTION_EXECUTE_HANDLER) {
-                    camera_pos_ok = false;
-                }
+                camera_pos_ok = safe_get_player_camera_component_position(camera_component, &camera_pos);
+                if (camera_pos_ok)
+                    g_pcc_position_count++;
             }
 
             std::string name;
-            __try {
-                if (g_cached_classes[0].nick_offset > 0) {
-                    void* str_obj = *(void**)(ptr + g_cached_classes[0].nick_offset);
-                    name = read_managed_string(str_obj);
-                }
-            } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            if (g_cached_classes[0].nick_offset > 0) {
+                void* str_obj = safe_read_ptr((void*)ptr, g_cached_classes[0].nick_offset);
+                name = read_managed_string(str_obj);
+            }
 
             Vector3 pos = {};
-            __try { pos = get_object_position(obj); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+            pos = safe_get_object_position(obj);
 
             if (!has_position_value(pos) && camera_pos_ok)
                 pos = camera_pos;
@@ -2798,21 +3881,17 @@ namespace unity {
             // Check if this is the local player
             bool has_input_auth = false;
             if (!g_cached_has_input_auth) {
-                __try {
-                    g_cached_has_input_auth = class_get_method_recursive(g_cached_classes[0].klass, "get_HasInputAuthority", 0);
-                } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                g_cached_has_input_auth = safe_class_get_method_recursive(g_cached_classes[0].klass, "get_HasInputAuthority", 0);
             }
             if (g_cached_has_input_auth) {
-                __try {
-                    if (invoke_bool_method(obj, g_cached_has_input_auth)) {
-                        has_input_auth = true;
-                        g_pcc_auth_count++;
-                        g_local_player_pos = pos;
-                        g_local_player_valid = has_position_value(pos);
-                        g_local_pno_ptr = obj;
-                        g_local_player_avatar = avatar;
-                    }
-                } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                if (safe_invoke_bool_method(obj, g_cached_has_input_auth)) {
+                    has_input_auth = true;
+                    g_pcc_auth_count++;
+                    g_local_player_pos = pos;
+                    g_local_player_valid = has_position_value(pos);
+                    g_local_pno_ptr = obj;
+                    g_local_player_avatar = avatar;
+                }
             }
 
             if (camera_component && (has_input_auth || !g_local_player_camera_component)) {
@@ -2849,94 +3928,38 @@ namespace unity {
         if (game_mode_class) {
             int32_t game_mode_count = 0;
             void* game_mode_arr = nullptr;
-            __try { game_mode_arr = find_objects_of_type(game_mode_class, game_mode_count, true); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { game_mode_arr = nullptr; game_mode_count = 0; }
+            safe_find_objects_of_type(game_mode_class, game_mode_count, false, &game_mode_arr);
 
             void** game_mode_elements = nullptr;
             if (game_mode_arr && game_mode_count > 0) {
-                __try { game_mode_elements = managed_object_array_items(game_mode_arr); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { game_mode_elements = nullptr; }
+                game_mode_elements = safe_managed_object_array_items(game_mode_arr);
             }
 
             for (int32_t gi = 0; game_mode_elements && gi < game_mode_count; gi++) {
-                void* game_mode = game_mode_elements[gi];
+                void* game_mode = safe_array_element(game_mode_elements, gi);
                 if (!game_mode)
                     continue;
 
-                g_game_mode_count++;
-
-                void* local_mob = nullptr;
-                __try { local_mob = get_local_player_mob_from_game_mode(game_mode); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { local_mob = nullptr; }
-                if (local_mob) {
-                    g_game_mode_local_mob_count++;
-                    cache_local_player_from_mob(local_mob);
-                    track_mob_pointer(local_mob);
-                }
-
-                __try { add_game_mode_team_players(game_mode, players, rendered, rendered_count); }
-                __except(EXCEPTION_EXECUTE_HANDLER) {}
-
-                void* mobs[64] = {};
-                int mob_count = 0;
-                void* mob_dict = nullptr;
-                __try { mob_dict = get_game_mode_mobs_dictionary(game_mode); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { mob_dict = nullptr; }
-                __try { mob_count = collect_player_mobs_from_dictionary(mob_dict, mobs, 64); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { mob_count = 0; }
-
-                for (int mi = 0; mi < mob_count; mi++) {
-                    void* mob = mobs[mi];
-                    if (!mob)
-                        continue;
-
-                    uintptr_t ptr = (uintptr_t)mob;
-                    if (contains_rendered_ptr(rendered, rendered_count, ptr))
-                        continue;
-
-                    g_game_mode_mob_count++;
-                    track_mob_pointer(mob);
-
-                    Vector3 pos = {};
-                    __try { pos = get_player_mob_position(mob); }
-                    __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
-                    if (!has_position_value(pos))
-                        continue;
-
-                    g_game_mode_mob_position_count++;
-
-                    bool has_input_auth = (mob == g_local_player_avatar);
-                    if (!has_input_auth) {
-                        __try { has_input_auth = pno_has_input_authority(mob); }
-                        __except(EXCEPTION_EXECUTE_HANDLER) { has_input_auth = false; }
-                    }
-
-                    PlayerInfo pi = make_player_info(std::string("GMob_") + std::to_string(mi), pos, ptr, ptr, 4);
-                    pi.is_local = has_input_auth || pi.is_local;
-                    if (!pi.is_valid)
-                        continue;
-                    players.push_back(pi);
-                    mark_rendered_ptr(rendered, rendered_count, ptr);
-                    publish_player_snapshot(players);
-                }
+                add_game_mode_players(game_mode, players, rendered, rendered_count);
             }
         }
 
+        static DWORD last_mob_scene_scan_ms = 0;
         void* mob_class = get_player_mob_class();
-        if (mob_class) {
+        DWORD mob_scene_interval = players.empty() ? 1000 : 3000;
+        bool need_mob_scene_scan = scan_interval_elapsed(last_mob_scene_scan_ms, mob_scene_interval);
+        if (mob_class && need_mob_scene_scan) {
             int32_t mob_count = 0;
             void* mob_arr = nullptr;
-            __try { mob_arr = find_objects_of_type(mob_class, mob_count); }
-            __except(EXCEPTION_EXECUTE_HANDLER) { mob_arr = nullptr; mob_count = 0; }
+            safe_find_objects_of_type(mob_class, mob_count, false, &mob_arr);
 
             void** mob_elements = nullptr;
             if (mob_arr && mob_count > 0) {
-                __try { mob_elements = managed_object_array_items(mob_arr); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { mob_elements = nullptr; }
+                mob_elements = safe_managed_object_array_items(mob_arr);
             }
 
             for (int32_t i = 0; mob_elements && i < mob_count; i++) {
-                void* mob = mob_elements[i];
+                void* mob = safe_array_element(mob_elements, i);
                 if (!mob)
                     continue;
 
@@ -2948,23 +3971,20 @@ namespace unity {
                 track_mob_pointer(mob);
 
                 Vector3 pos = {};
-                __try { pos = get_player_mob_position(mob); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { pos = {}; }
+                pos = safe_get_player_mob_position(mob);
                 if (!has_position_value(pos))
                     continue;
 
                 g_player_mob_position_count++;
 
                 bool has_input_auth = false;
-                __try { has_input_auth = pno_has_input_authority(mob); }
-                __except(EXCEPTION_EXECUTE_HANDLER) { has_input_auth = false; }
+                has_input_auth = safe_pno_has_input_authority(mob);
                 if (has_input_auth) {
                     g_local_player_avatar = mob;
                     g_local_player_pos = pos;
                     g_local_player_valid = true;
                     if (!g_local_player_camera_component) {
-                        __try { g_local_player_camera_component = get_camera_component_from_avatar(mob); }
-                        __except(EXCEPTION_EXECUTE_HANDLER) {}
+                        g_local_player_camera_component = safe_get_camera_component_from_avatar(mob);
                     }
                 }
 
@@ -2978,16 +3998,130 @@ namespace unity {
             }
         }
 
-        // Direct MoveComponent scene scans are intentionally disabled here:
-        // during map joins Unity is constructing/despawning these components and
-        // FindObjectsOfType(MoveComponent) can stall the render thread. We still
-        // use MoveComponent offsets through PlayerMob._moveComponent above.
-        g_move_component_count = 0;
-        g_move_component_position_count = 0;
+        static DWORD last_bot_scene_scan_ms = 0;
+        void* bot_class = get_bot_mob_class();
+        DWORD bot_scene_interval = players.empty() ? 1000 : 3000;
+        bool need_bot_scene_scan = scan_interval_elapsed(last_bot_scene_scan_ms, bot_scene_interval);
+        if (bot_class && need_bot_scene_scan) {
+            int32_t bot_count = 0;
+            void* bot_arr = nullptr;
+            safe_find_objects_of_type(bot_class, bot_count, false, &bot_arr);
 
-        __try { refresh_scene_camera_cache(); }
-        __except(EXCEPTION_EXECUTE_HANDLER) {}
+            void** bot_elements = nullptr;
+            if (bot_arr && bot_count > 0) {
+                bot_elements = safe_managed_object_array_items(bot_arr);
+            }
 
+            if (bot_count > 128)
+                bot_count = 128;
+
+            for (int32_t i = 0; bot_elements && i < bot_count; i++) {
+                void* bot = safe_array_element(bot_elements, i);
+                if (!bot)
+                    continue;
+
+                uintptr_t bot_ptr = (uintptr_t)bot;
+                void* mob = get_bot_mob_player_mob(bot);
+                uintptr_t mob_ptr = (uintptr_t)mob;
+                if (contains_rendered_ptr(rendered, rendered_count, bot_ptr) ||
+                    contains_rendered_ptr(rendered, rendered_count, mob_ptr))
+                    continue;
+
+                g_bot_mob_count++;
+
+                if (mob)
+                    track_mob_pointer(mob);
+
+                Vector3 pos = get_bot_mob_position(bot);
+                if (!has_position_value(pos) && mob)
+                    pos = safe_get_player_mob_position(mob);
+                if (!has_position_value(pos))
+                    continue;
+
+                g_bot_mob_position_count++;
+
+                PlayerInfo pi = make_player_info("BOT", pos, bot_ptr, mob_ptr, 5);
+                pi.is_local = false;
+                apply_bot_identity(pi, bot, mob);
+                if (!pi.is_valid)
+                    continue;
+
+                players.push_back(pi);
+                mark_rendered_ptr(rendered, rendered_count, bot_ptr);
+                mark_rendered_ptr(rendered, rendered_count, mob_ptr);
+                publish_player_snapshot(players);
+            }
+        }
+
+        static DWORD last_move_scene_scan_ms = 0;
+        bool need_move_scene_scan =
+            players.empty() ||
+            (g_game_mode_team_player_count > 0 && (int)players.size() < g_game_mode_team_player_count) ||
+            (g_bot_mob_count > 0 && g_bot_mob_position_count == 0);
+        DWORD move_scene_interval = players.empty() ? 1500 : 5000;
+        void* move_class = get_move_component_class();
+        if (move_class && need_move_scene_scan && scan_interval_elapsed(last_move_scene_scan_ms, move_scene_interval)) {
+            int32_t move_count = 0;
+            void* move_arr = nullptr;
+            safe_find_objects_of_type(move_class, move_count, false, &move_arr);
+
+            void** move_elements = nullptr;
+            if (move_arr && move_count > 0) {
+                move_elements = safe_managed_object_array_items(move_arr);
+            }
+
+            if (move_count > 96)
+                move_count = 96;
+
+            void* local_move = get_local_move_component();
+            for (int32_t i = 0; move_elements && i < move_count; i++) {
+                void* move = safe_array_element(move_elements, i);
+                if (!move || move == local_move)
+                    continue;
+
+                void* mob = safe_read_ptr(move, 0x50); // PlayerMobBeh._playerMob
+                if (!mob || !is_player_mob_bot(mob))
+                    continue;
+
+                uintptr_t move_ptr = (uintptr_t)move;
+                uintptr_t mob_ptr = (uintptr_t)mob;
+                uintptr_t render_key = mob_ptr ? mob_ptr : move_ptr;
+                if (contains_rendered_ptr(rendered, rendered_count, render_key))
+                    continue;
+
+                g_move_component_count++;
+                if (mob)
+                    track_mob_pointer(mob);
+
+                Vector3 pos = safe_get_move_component_position(move);
+                if (!has_position_value(pos) && mob)
+                    pos = safe_get_player_mob_position(mob);
+                if (!has_position_value(pos))
+                    continue;
+
+                g_move_component_position_count++;
+
+                bool is_local = mob && mob == g_local_player_avatar;
+                if (is_local)
+                    continue;
+
+                PlayerInfo pi = make_player_info("BOT", pos, move_ptr, mob_ptr, 3);
+                pi.is_local = pi.is_local || is_local;
+                apply_bot_identity(pi, get_player_mob_bot_player(mob), mob);
+                pi.is_dead = false;
+                if (!pi.is_valid)
+                    continue;
+
+                players.push_back(pi);
+                mark_rendered_ptr(rendered, rendered_count, move_ptr);
+                mark_rendered_ptr(rendered, rendered_count, mob_ptr);
+                publish_player_snapshot(players);
+            }
+        }
+
+        safe_refresh_scene_camera_cache();
+
+        append_cached_fallback_players(previous_cached, players, rendered, rendered_count);
         publish_player_snapshot(players);
         return players;
     }
@@ -3122,6 +4256,8 @@ namespace unity {
             __except(EXCEPTION_EXECUTE_HANDLER) { relation = 0; }
             if (relation != 2) continue;
 
+            track_chams_enemy_mob_pointer(safe_read_ptr(pv, 0x50)); // PlayerMobBeh._playerMob
+
             __try { rva_remove_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
             __try { rva_remove_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
 
@@ -3229,6 +4365,8 @@ namespace unity {
             __try { relation = get_chams_team_relation(pv); }
             __except(EXCEPTION_EXECUTE_HANDLER) { relation = 0; }
             if (relation != 2) continue;
+
+            track_chams_enemy_mob_pointer(safe_read_ptr(pv, 0x50)); // PlayerMobBeh._playerMob
 
             __try { rva_remove_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
             __try { rva_remove_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
