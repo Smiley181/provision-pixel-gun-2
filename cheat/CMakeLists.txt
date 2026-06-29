@@ -12,6 +12,7 @@ add_library(cheat SHARED
     src/renderer.cpp
     src/unity.cpp
     src/features.cpp
+    src/config.cpp
     src/menu.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp

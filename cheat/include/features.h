@@ -1,36 +1,33 @@
 #pragma once
 #include "unity.h"
+#include "config_fields.h"
 #include <imgui.h>
 
 struct ESPConfig {
-    bool enabled = true;
-    bool show_boxes = true;
-    bool show_names = true;
-    bool show_health = true;
-    bool show_distance = true;
-    bool show_lines = false;
-    bool show_teammates = false;
-    bool show_grenades = false;
-    bool show_refill_stations = false;
-    bool show_chams = false;
-    float teammate_color[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
-    float chams_color[4] = { 1.0f, 0.0f, 0.0f, 0.6f };
-    float esp_distance = 200.0f;
+#define M(type, name, default) type name = default;
+    ESP_SCALAR_FIELDS(M)
+#undef M
+#define M(type, name, count, ...) type name[count] = __VA_ARGS__;
+    ESP_ARRAY_FIELDS(M)
+#undef M
 };
 
 struct AimbotConfig {
-    bool enabled = true;
-    bool aim_on_mouse5_hold = true;
-    float fov = 15.0f;
-    float smooth = 5.0f;
-    bool show_fov_circle = true;
-    bool aim_teammates = false;
-    bool recoil_compensation = false;
+#define M(type, name, default) type name = default;
+    AIMBOT_SCALAR_FIELDS(M)
+#undef M
+#define M(type, name, count, ...) type name[count] = __VA_ARGS__;
+    AIMBOT_ARRAY_FIELDS(M)
+#undef M
 };
 
 struct MenuConfig {
-    bool show_menu = true;
-    int menu_key = VK_INSERT;
+#define M(type, name, default) type name = default;
+    MENU_SCALAR_FIELDS(M)
+#undef M
+#define M(type, name, count, ...) type name[count] = __VA_ARGS__;
+    MENU_ARRAY_FIELDS(M)
+#undef M
 };
 
 extern ESPConfig esp_config;

@@ -4,6 +4,7 @@
 #include "../include/unity.h"
 #include "../include/il2cpp_api.h"
 #include "../include/renderer.h"
+#include "../include/config.h"
 #include <cstdio>
 
 namespace menu {
@@ -40,6 +41,14 @@ namespace menu {
 
     void render_settings_tab() {
         ImGui::Text("Settings");
+        ImGui::Separator();
+
+        if (ImGui::Button("Save Config", ImVec2(120, 0)))
+            config::save();
+        ImGui::SameLine();
+        if (ImGui::Button("Load Config", ImVec2(120, 0)))
+            config::load();
+
         ImGui::Separator();
         ImGui::Text("Menu Key: INSERT");
         ImGui::Text("IL2CPP Status: %s", il2cpp::initialized ? "Connected" : "Not Connected");

@@ -5,6 +5,7 @@
 #include "../include/unity.h"
 #include "../include/features.h"
 #include "../include/menu.h"
+#include "../include/config.h"
 
 static void init_il2cpp() {
     for (int i = 0; i < 60; i++) {
@@ -43,6 +44,11 @@ static DWORD WINAPI main_thread(LPVOID) {
         if (unity::initialize())
             printf("[main] Unity API ready\n");
     }
+
+    if (config::load())
+        printf("[main] Config loaded from %s\n", config::get_config_path());
+    else
+        printf("[main] No saved config found, using defaults\n");
 
     if (!renderer::initialize()) {
         printf("[main] Present hook setup FAILED\n");
