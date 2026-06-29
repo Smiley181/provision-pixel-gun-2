@@ -11,6 +11,7 @@ struct ESPConfig {
     bool show_lines = false;
     bool show_teammates = false;
     bool show_grenades = false;
+    bool show_refill_stations = false;
     bool show_chams = false;
     float teammate_color[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
     float chams_color[4] = { 1.0f, 0.0f, 0.0f, 0.6f };

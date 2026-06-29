@@ -124,6 +124,8 @@ namespace unity {
     static void* g_game_mode_class = nullptr;
     static void* g_scene_camera_class = nullptr;
     static void* g_kinematic_projectile_view_class = nullptr;
+    static void* g_pickup_view_class = nullptr;
+    static void* g_pickup_point_class = nullptr;
     static void* g_cached_get_camera_position_method = nullptr;
     static void* g_cached_get_first_person_camera_method = nullptr;
     static void* g_cached_get_player_avatar_method = nullptr;
@@ -184,6 +186,7 @@ namespace unity {
     static uintptr_t g_mob_team_ptrs[128] = {};
     static int g_mob_team_numbers[128] = {};
     static int g_grenade_count = 0;
+    static int g_refill_station_count = 0;
     static std::vector<PlayerInfo> g_cached_players;
     static std::vector<uintptr_t> g_tracked_mobs;
     static std::vector<uintptr_t> g_chams_enemy_mobs;
@@ -200,6 +203,9 @@ namespace unity {
     static constexpr uintptr_t RVA_ProjectileViewBase_Kinematic_get_IsFinished = 0xBBCEA0;
     static constexpr uintptr_t RVA_PlayerVisuals_get_PlayerTeamRelation = 0x10EDD50;
     static constexpr uintptr_t RVA_EcsComponentNet_get_Id = 0x11F8610;
+    static constexpr uintptr_t RVA_PickupPoint_GetCurrentPickup = 0x10FD790;
+    static constexpr uintptr_t RVA_PickupPoint_GetPickupByViewType = 0x10FD8C0;
+    static constexpr uintptr_t RVA_PickupPoint_IsAvailable = 0x10FDCF0;
 
     int get_debug_player_count() { return g_player_count; }
     bool get_debug_camera_found() { return g_camera_found; }
@@ -232,6 +238,7 @@ namespace unity {
     int get_debug_brain_scan_count() { return g_brain_scan_count; }
     int get_debug_camera_scan_count() { return g_camera_scan_count; }
     int get_debug_grenade_count() { return g_grenade_count; }
+    int get_debug_refill_station_count() { return g_refill_station_count; }
     bool has_tracked_scene_state() {
         return !g_tracked_game_modes.empty() || !g_chams_enemy_mobs.empty();
     }
@@ -1951,6 +1958,24 @@ namespace unity {
         return g_kinematic_projectile_view_class;
     }
 
+    static void* get_pickup_view_class() {
+        if (!g_pickup_view_class) {
+            g_pickup_view_class = find_class_anywhere(
+                "Psa.Core.Modules.Pickups",
+                "PickupView");
+        }
+        return g_pickup_view_class;
+    }
+
+    static void* get_pickup_point_class() {
+        if (!g_pickup_point_class) {
+            g_pickup_point_class = find_class_anywhere(
+                "Psa.Core.Modules.Pickups",
+                "PickupPoint");
+        }
+        return g_pickup_point_class;
+    }
+
     static Vector3 safe_get_transform_position(void* transform) {
         Vector3 pos = {};
         __try { pos = get_transform_position(transform); }
@@ -2020,6 +2045,120 @@ namespace unity {
 
         g_grenade_count = (int)grenades.size();
         return grenades;
+    }
+
+    static const char* refill_station_name(int pickup_type) {
+        switch (pickup_type) {
+        case 1: return "Ammo Station";
+        case 2: return "Heal Station";
+        default: return "Refill Station";
+        }
+    }
+
+    static bool append_refill_station(std::vector<WorldObjectInfo>& stations, void* object, int pickup_type,
+        const Vector3& pos, int source_type) {
+        if (pickup_type != 1 && pickup_type != 2)
+            return false;
+        if (!is_reasonable_position(pos))
+            return false;
+
+        WorldObjectInfo info;
+        info.name = refill_station_name(pickup_type);
+        info.position = pos;
+        info.is_valid = true;
+        info.object_ptr = (uintptr_t)object;
+        info.source_type = source_type;
+        stations.push_back(info);
+        return true;
+    }
+
+    static int pickup_type_from_pickup_object(void* pickup) {
+        if (!pickup)
+            return 0;
+
+        void* klass = get_object_runtime_class(pickup);
+        const char* class_name = safe_class_name(klass);
+        if (class_name) {
+            if (strcmp(class_name, "PickupAmmo") == 0)
+                return 1;
+            if (strcmp(class_name, "PickupHealth") == 0)
+                return 2;
+        }
+
+        return 0;
+    }
+
+    std::vector<WorldObjectInfo> get_refill_stations() {
+        std::vector<WorldObjectInfo> stations;
+        g_refill_station_count = 0;
+
+        try_init_classes();
+        if (!il2cpp::initialized || !g_ready)
+            return stations;
+
+        void* pickup_view_class = get_pickup_view_class();
+        int32_t count = 0;
+        void* arr = nullptr;
+        safe_find_objects_of_type(pickup_view_class, count, false, &arr);
+
+        void** elements = nullptr;
+        if (arr && count > 0)
+            elements = safe_managed_object_array_items(arr);
+        if (count > 128)
+            count = 128;
+
+        for (int32_t i = 0; elements && i < count; i++) {
+            void* view = safe_array_element(elements, i);
+            if (!view)
+                continue;
+
+            int pickup_type = safe_read_int(view, 0x30, 0); // PickupView.Type
+            Vector3 pos = safe_get_object_position(view);
+            append_refill_station(stations, view, pickup_type, pos, pickup_type);
+        }
+
+        if (!stations.empty()) {
+            g_refill_station_count = (int)stations.size();
+            return stations;
+        }
+
+        void* pickup_point_class = get_pickup_point_class();
+        count = 0;
+        arr = nullptr;
+        safe_find_objects_of_type(pickup_point_class, count, false, &arr);
+
+        elements = nullptr;
+        if (arr && count > 0)
+            elements = safe_managed_object_array_items(arr);
+        if (count > 128)
+            count = 128;
+
+        for (int32_t i = 0; elements && i < count; i++) {
+            void* point = safe_array_element(elements, i);
+            if (!point)
+                continue;
+
+            bool available = true;
+            bool availability_known = invoke_bool_rva(point, RVA_PickupPoint_IsAvailable, &available);
+            if (availability_known && !available)
+                continue;
+
+            void* pickup = invoke_ref_return_rva(point, RVA_PickupPoint_GetPickupByViewType);
+            if (!pickup)
+                pickup = invoke_ref_return_rva(point, RVA_PickupPoint_GetCurrentPickup);
+            int pickup_type = pickup_type_from_pickup_object(pickup);
+
+            Vector3 pos = safe_get_object_position(point);
+            if (!is_reasonable_position(pos)) {
+                void* data = safe_read_ptr(point, 0x20); // PickupPoint.Data
+                pos = safe_read_vector3(data, 0x28);    // PickupPoint.PointData.position
+            }
+
+            append_refill_station(stations, point, pickup_type, pos, pickup_type);
+        }
+
+        g_refill_station_count = (int)stations.size();
+        return stations;
     }
 
     void* find_object_of_type(const char* image_name, const char* namesp, const char* class_name) {

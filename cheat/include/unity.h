@@ -86,6 +86,7 @@ namespace unity {
     int get_debug_brain_scan_count();
     int get_debug_camera_scan_count();
     int get_debug_grenade_count();
+    int get_debug_refill_station_count();
     const char* get_debug_activity_op();
     const char* get_debug_activity_class();
     bool get_debug_activity_include_inactive();
@@ -105,6 +106,7 @@ namespace unity {
     std::vector<PlayerInfo> get_cached_players();
     std::vector<PlayerInfo> refresh_cached_players();
     std::vector<WorldObjectInfo> get_grenades();
+    std::vector<WorldObjectInfo> get_refill_stations();
     std::string get_object_name(void* obj);
     Vector3 get_camera_position(void* camera);
     Vector3 get_object_position(void* transform);

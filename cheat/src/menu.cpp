@@ -29,6 +29,7 @@ namespace menu {
         ImGui::Checkbox("Show Lines", &esp_config.show_lines);
         ImGui::Checkbox("Show Teammates", &esp_config.show_teammates);
         ImGui::Checkbox("Grenades", &esp_config.show_grenades);
+        ImGui::Checkbox("Refill Stations", &esp_config.show_refill_stations);
         ImGui::Separator();
         ImGui::Text("Player Chams");
         ImGui::Checkbox("Enable Chams", &esp_config.show_chams);

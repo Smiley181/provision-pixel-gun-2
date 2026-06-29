@@ -11,6 +11,7 @@ MenuConfig menu_config;
 namespace features {
     static std::vector<PlayerInfo> g_players;
     static std::vector<WorldObjectInfo> g_grenades;
+    static std::vector<WorldObjectInfo> g_refill_stations;
     static bool g_aim_last_success = false;
     static bool g_aim_hold_active = false;
 
@@ -297,6 +298,7 @@ namespace features {
         int brain_scans = unity::get_debug_brain_scan_count();
         int camera_scans = unity::get_debug_camera_scan_count();
         int grenade_count = unity::get_debug_grenade_count();
+        int refill_station_count = unity::get_debug_refill_station_count();
 
         void* cam = nullptr;
         if (esp_config.enabled && unity_ready) {
@@ -307,12 +309,13 @@ namespace features {
             safe_get_camera_position(cam, cpos);
 
         snprintf(debug_buf, sizeof(debug_buf),
-            "CHEAT|C34 P:%d/%zu Cam:%s R:%s AH:%s A:%s G:%d/%zu"
+            "CHEAT|C35 P:%d/%zu Cam:%s R:%s AH:%s A:%s G:%d/%zu RS:%d/%zu"
             " VM:%s PM:%s WM:%s B:%d/%d",
             player_count, g_players.size(), camera_ok ? "Y" : "N", unity_ready ? "Y" : "N",
             g_aim_hold_active ? "Y" : "N",
             g_aim_last_success ? "Y" : "N",
             grenade_count, g_grenades.size(),
+            refill_station_count, g_refill_stations.size(),
             vm ? "Y" : "N", pm ? "Y" : "N", wm ? "Y" : "N",
             bot_objects, bot_positions);
 
@@ -340,6 +343,18 @@ namespace features {
             }
         } else if (!g_grenades.empty()) {
             g_grenades.clear();
+        }
+
+        static DWORD last_refill_station_scan = 0;
+        static DWORD refill_station_cooldown = 1500;
+        if (esp_config.show_refill_stations && !g_players.empty()) {
+            if (now - last_refill_station_scan > refill_station_cooldown) {
+                last_refill_station_scan = now;
+                g_refill_stations = unity::get_refill_stations();
+                refill_station_cooldown = g_refill_stations.empty() ? 3000 : 1500;
+            }
+        } else if (!g_refill_stations.empty()) {
+            g_refill_stations.clear();
         }
 
         for (auto& player : g_players) {
@@ -509,6 +524,54 @@ namespace features {
                     ImVec2(screen.x + size * 0.5f, screen.y + size * 0.5f), grenade_color, 0.0f, 0, 1.5f);
                 draw_list->AddText(ImVec2(screen.x - 24.0f, screen.y - size - 11.0f),
                     grenade_color, grenade.name.c_str());
+            }
+        }
+
+        if (esp_config.show_refill_stations) {
+            for (auto& station : g_refill_stations) {
+                if (!station.is_valid)
+                    continue;
+                if (!is_reasonable_world_point(station.position))
+                    continue;
+
+                float dist = (station.position - cpos).magnitude();
+                if (!std::isfinite(dist) || dist <= 0.0f || dist > esp_config.esp_distance * 2.0f)
+                    continue;
+
+                Vector2 screen;
+                bool screen_ok = false;
+                wts_try++;
+                screen_ok = safe_world_to_screen(station.position, screen, cam);
+                if (!screen_ok || !is_finite_screen_point(screen) || !screen_point_near_view(screen, sw, sh))
+                    continue;
+
+                w2s_ok++;
+                float size = 15.0f;
+                if (screen.x + size < 0.0f || screen.x - size > (float)sw ||
+                    screen.y + size < 0.0f || screen.y - size > (float)sh)
+                    continue;
+
+                ImU32 station_color = station.source_type == 1
+                    ? IM_COL32(80, 180, 255, 255)
+                    : IM_COL32(80, 255, 120, 255);
+                ImVec2 center(screen.x, screen.y);
+                draw_list->AddCircleFilled(center, size * 0.5f, IM_COL32(0, 0, 0, 150), 16);
+                draw_list->AddCircle(center, size * 0.5f, station_color, 16, 1.5f);
+                draw_list->AddLine(ImVec2(screen.x - size * 0.25f, screen.y),
+                    ImVec2(screen.x + size * 0.25f, screen.y), station_color, 1.5f);
+                draw_list->AddLine(ImVec2(screen.x, screen.y - size * 0.25f),
+                    ImVec2(screen.x, screen.y + size * 0.25f), station_color, 1.5f);
+
+                char label[64];
+                if (esp_config.show_distance)
+                    snprintf(label, sizeof(label), "%s %.0fm", station.name.c_str(), dist);
+                else
+                    snprintf(label, sizeof(label), "%s", station.name.c_str());
+                ImVec2 label_size = ImGui::CalcTextSize(label);
+                ImVec2 label_pos(screen.x - label_size.x * 0.5f, screen.y - size - label_size.y - 3.0f);
+                draw_list->AddText(ImVec2(label_pos.x + 1.0f, label_pos.y + 1.0f),
+                    IM_COL32(0, 0, 0, 190), label);
+                draw_list->AddText(label_pos, station_color, label);
             }
         }
         }
