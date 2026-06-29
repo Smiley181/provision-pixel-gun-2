@@ -265,71 +265,25 @@ namespace features {
 
     void render_esp(ImDrawList* draw_list) {
         DWORD now = GetTickCount();
-        int player_count = unity::get_debug_player_count();
-        bool camera_ok = unity::get_debug_camera_found();
         bool unity_ready = unity::is_ready();
-
-        char debug_buf[512];
-        int w2s_ok = 0, wts_try = 0;
-
-        bool vm = unity::get_debug_view_method();
-        bool pm = unity::get_debug_proj_method();
-        bool wm = unity::get_debug_wts_method();
-        int pc_avatars = unity::get_debug_player_camera_avatar_count();
-        int pc_components = unity::get_debug_player_camera_component_count();
-        int pc_auth = unity::get_debug_player_camera_authority_count();
-        int pc_positions = unity::get_debug_player_camera_position_count();
-        bool pc_cached = unity::get_debug_player_camera_cached();
-        int gm_count = unity::get_debug_game_mode_count();
-        int gm_local_mob_count = unity::get_debug_game_mode_local_mob_count();
-        int scene_camera_count = unity::get_debug_scene_camera_count();
-        int pno_objects = unity::get_debug_pno_object_count();
-        int mob_objects = unity::get_debug_player_mob_count();
-        int mob_positions = unity::get_debug_player_mob_position_count();
-        int bot_objects = unity::get_debug_bot_mob_count();
-        int bot_positions = unity::get_debug_bot_mob_position_count();
-        int move_objects = unity::get_debug_move_component_count();
-        int move_positions = unity::get_debug_move_component_position_count();
-        int game_mode_mobs = unity::get_debug_game_mode_mob_count();
-        int game_mode_mob_positions = unity::get_debug_game_mode_mob_position_count();
-        int game_mode_teams = unity::get_debug_game_mode_team_count();
-        int game_mode_team_players = unity::get_debug_game_mode_team_player_count();
-        int game_mode_team_mobs = unity::get_debug_game_mode_team_mob_count();
-        int brain_scans = unity::get_debug_brain_scan_count();
-        int camera_scans = unity::get_debug_camera_scan_count();
-        int grenade_count = unity::get_debug_grenade_count();
-        int refill_station_count = unity::get_debug_refill_station_count();
-
         void* cam = nullptr;
+        Vector3 cpos{};
         if (esp_config.enabled && unity_ready) {
             cam = safe_get_main_camera();
+            if (cam)
+                safe_get_camera_position(cam, cpos);
         }
-        Vector3 cpos;
-        if (cam)
-            safe_get_camera_position(cam, cpos);
 
-        snprintf(debug_buf, sizeof(debug_buf),
-            "CHEAT|C35 P:%d/%zu Cam:%s R:%s AH:%s A:%s G:%d/%zu RS:%d/%zu"
-            " VM:%s PM:%s WM:%s B:%d/%d",
-            player_count, g_players.size(), camera_ok ? "Y" : "N", unity_ready ? "Y" : "N",
-            g_aim_hold_active ? "Y" : "N",
-            g_aim_last_success ? "Y" : "N",
-            grenade_count, g_grenades.size(),
-            refill_station_count, g_refill_stations.size(),
-            vm ? "Y" : "N", pm ? "Y" : "N", wm ? "Y" : "N",
-            bot_objects, bot_positions);
-
-        draw_list->AddRectFilled(ImVec2(5, 5), ImVec2(720, 30), IM_COL32(0, 0, 0, 180), 4.0f);
-        draw_list->AddText(ImVec2(10, 8), IM_COL32(0, 255, 255, 255), debug_buf);
+        draw_list->AddRectFilled(ImVec2(5, 5), ImVec2(180, 25), IM_COL32(0, 0, 0, 160), 4.0f);
+        draw_list->AddText(ImVec2(10, 8), IM_COL32(0, 255, 255, 255), "Provision | Pixel Gun 2");
 
         if (!esp_config.enabled || !unity_ready)
-            goto draw_cam_overlay;
+            return;
 
-        if (!cam) goto draw_cam_overlay;
+        if (!cam) return;
 
-        {
         RECT rect;
-        if (!GetWindowRect(renderer::get_window(), &rect)) goto draw_cam_overlay;
+        if (!GetWindowRect(renderer::get_window(), &rect)) return;
         int sw = rect.right - rect.left;
         int sh = rect.bottom - rect.top;
 
@@ -383,22 +337,16 @@ namespace features {
             Vector2 foot_screen, head_screen;
             bool foot_ok = false;
             bool head_ok = false;
-            wts_try++;
             foot_ok = safe_world_to_screen(player.position, foot_screen, cam);
             if (!foot_ok)
                 continue;
-            w2s_ok++;
-
-            wts_try++;
             Vector3 box_top_world = player.position;
             box_top_world.y += 2.05f;
             if (aim_head_world.y > box_top_world.y)
                 box_top_world = aim_head_world;
 
             head_ok = safe_world_to_screen(box_top_world, head_screen, cam);
-            if (head_ok) {
-                w2s_ok++;
-            } else {
+            if (!head_ok) {
                 head_screen = foot_screen;
                 head_screen.y -= 80.0f;
             }
@@ -509,12 +457,10 @@ namespace features {
 
                 Vector2 screen;
                 bool screen_ok = false;
-                wts_try++;
                 screen_ok = safe_world_to_screen(grenade.position, screen, cam);
                 if (!screen_ok || !is_finite_screen_point(screen) || !screen_point_near_view(screen, sw, sh))
                     continue;
 
-                w2s_ok++;
                 float size = 16.0f;
                 if (screen.x + size < 0.0f || screen.x - size > (float)sw ||
                     screen.y + size < 0.0f || screen.y - size > (float)sh)
@@ -540,12 +486,10 @@ namespace features {
 
                 Vector2 screen;
                 bool screen_ok = false;
-                wts_try++;
                 screen_ok = safe_world_to_screen(station.position, screen, cam);
                 if (!screen_ok || !is_finite_screen_point(screen) || !screen_point_near_view(screen, sw, sh))
                     continue;
 
-                w2s_ok++;
                 float size = 15.0f;
                 if (screen.x + size < 0.0f || screen.x - size > (float)sw ||
                     screen.y + size < 0.0f || screen.y - size > (float)sh)
@@ -577,23 +521,6 @@ namespace features {
                     IM_COL32(0, 0, 0, 190), label);
                 draw_list->AddText(label_pos, station_color, label);
             }
-        }
-        }
-
-draw_cam_overlay:
-        if (cam) {
-            char cam_buf[512];
-            snprintf(cam_buf, sizeof(cam_buf), "Cpos:%s %.1f %.1f %.1f W2S:%d/%d LC:%s SRC:%d/%d/%d GD:%d/%d TM:%d/%d/%d MV:%d/%d PC:%d/%d/%d/%d GM:%d/%d SC:%d S:%d/%d",
-                unity::get_debug_camera_source(), cpos.x, cpos.y, cpos.z, w2s_ok, wts_try,
-                pc_cached ? "Y" : "N", pno_objects, mob_objects, mob_positions,
-                game_mode_mobs, game_mode_mob_positions,
-                game_mode_teams, game_mode_team_players, game_mode_team_mobs,
-                move_objects, move_positions,
-                pc_avatars, pc_components, pc_auth, pc_positions,
-                gm_count, gm_local_mob_count, scene_camera_count,
-                brain_scans, camera_scans);
-            draw_list->AddRectFilled(ImVec2(5, 22), ImVec2(1080, 42), IM_COL32(0, 0, 0, 180), 4.0f);
-            draw_list->AddText(ImVec2(10, 25), IM_COL32(0, 255, 255, 255), cam_buf);
         }
     }
 
