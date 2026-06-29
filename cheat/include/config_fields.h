@@ -34,6 +34,7 @@
     M(bool, aim_on_mouse5_hold, true) \
     M(bool, show_fov_circle, true) \
     M(bool, aim_teammates, false) \
+    M(bool, aim_only_visible, false) \
     M(bool, recoil_compensation, false) \
     M(float, fov, 15.0f) \
     M(float, smooth, 5.0f)
