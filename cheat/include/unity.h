@@ -112,6 +112,10 @@ namespace unity {
     Vector3 get_object_position(void* transform);
     Vector3 get_bone_position(void* transform);
     bool aim_at_world(const Vector3& target, float smooth, bool recoil_compensation = false);
+    // Returns true if there is a clear line of sight between `from` and `to`
+    // (i.e. no world geometry blocks the segment). `layer_mask` selects which
+    // physics layers count as occluders; pass -1 to test against every layer.
+    bool is_visible(const Vector3& from, const Vector3& to, int layer_mask = -1);
 
     void* find_object_of_type(const char* image_name, const char* namesp, const char* class_name);
     void* get_transform(void* obj);

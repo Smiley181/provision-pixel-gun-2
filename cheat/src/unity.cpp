@@ -206,6 +206,8 @@ namespace unity {
     static constexpr uintptr_t RVA_PickupPoint_GetCurrentPickup = 0x10FD790;
     static constexpr uintptr_t RVA_PickupPoint_GetPickupByViewType = 0x10FD8C0;
     static constexpr uintptr_t RVA_PickupPoint_IsAvailable = 0x10FDCF0;
+    // UnityEngine.Physics.Linecast(Vector3 start, Vector3 end, int layerMask, QueryTriggerInteraction)
+    static constexpr uintptr_t RVA_Physics_Linecast = 0x71B1990;
 
     int get_debug_player_count() { return g_player_count; }
     bool get_debug_camera_found() { return g_camera_found; }
@@ -1947,6 +1949,53 @@ namespace unity {
             return false;
 
         return invoke_void_vector2_rva(move, RVA_MoveComponent_SetViewRotation, write_angles);
+    }
+
+    // QueryTriggerInteraction.Ignore == 1 (UseGlobal=0, Ignore=1, Collide=2).
+    // Ignoring triggers prevents non-solid volumes (spawns, pickups, kill zones)
+    // from being treated as occluders during the line-of-sight test.
+    static constexpr int kQueryTriggerIgnore = 1;
+
+    static bool physics_linecast_blocked(const Vector3& start, const Vector3& end, int layer_mask) {
+        if (!il2cpp::module_base || !RVA_Physics_Linecast ||
+            (il2cpp::module_size && RVA_Physics_Linecast >= il2cpp::module_size))
+            return false;
+
+        using fn_t = bool (*)(Vector3, Vector3, int, int, void*);
+        bool blocked = false;
+        __try {
+            auto fn = (fn_t)(il2cpp::module_base + RVA_Physics_Linecast);
+            blocked = fn(start, end, layer_mask, kQueryTriggerIgnore, nullptr);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            blocked = false;
+        }
+        return blocked;
+    }
+
+    bool is_visible(const Vector3& from, const Vector3& to, int layer_mask) {
+        try_init_classes();
+        if (!il2cpp::initialized || !g_ready)
+            return true; // Fail open: never block aiming when we cannot test.
+
+        Vector3 dir = to - from;
+        float dist = dir.magnitude();
+        if (!std::isfinite(dist) || dist < 0.01f)
+            return true;
+
+        // Nudge the ray endpoints inward so it does not immediately collide with
+        // the shooter's own collider (near the camera) or the target's surface
+        // collider (which would otherwise always report "blocked").
+        Vector3 n = dir * (1.0f / dist);
+        float pad = dist * 0.04f;
+        if (pad < 0.05f) pad = 0.05f;
+        if (pad > 0.5f)  pad = 0.5f;
+
+        Vector3 start = from + n * pad;
+        Vector3 end = to - n * pad;
+
+        // Physics.Linecast returns true when something is hit between the two
+        // points, so a clear line of sight is the inverse of "blocked".
+        return !physics_linecast_blocked(start, end, layer_mask);
     }
 
     static void* get_kinematic_projectile_view_class() {

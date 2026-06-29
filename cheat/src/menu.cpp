@@ -16,6 +16,7 @@ namespace menu {
         ImGui::Checkbox("Mouse5 Hold", &aimbot_config.aim_on_mouse5_hold);
         ImGui::Checkbox("Show FOV Circle", &aimbot_config.show_fov_circle);
         ImGui::Checkbox("Aim Teammates", &aimbot_config.aim_teammates);
+        ImGui::Checkbox("Only Visible", &aimbot_config.aim_only_visible);
         ImGui::Checkbox("Recoil Compensation", &aimbot_config.recoil_compensation);
         ImGui::SliderFloat("FOV", &aimbot_config.fov, 1.0f, 90.0f, "%.1f");
         ImGui::SliderFloat("Smoothing", &aimbot_config.smooth, 1.0f, 20.0f, "%.1f");

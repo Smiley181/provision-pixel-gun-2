@@ -103,6 +103,13 @@ namespace features {
         return ok;
     }
 
+    static bool safe_is_visible(const Vector3& from, const Vector3& to) {
+        bool ok = true;
+        __try { ok = unity::is_visible(from, to); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { ok = true; }
+        return ok;
+    }
+
     static void safe_set_chams_enabled(bool enabled, bool xray, bool glow, const float* color) {
         __try { unity::set_chams_enabled(enabled, xray, glow, color); }
         __except(EXCEPTION_EXECUTE_HANDLER) {}
@@ -229,6 +236,9 @@ namespace features {
         void* cam = safe_get_main_camera();
         if (!cam) return;
 
+        Vector3 cam_pos{};
+        bool cam_pos_ok = safe_get_camera_position(cam, cam_pos);
+
         HWND hwnd = renderer::get_window();
         if (!hwnd) return;
         RECT rect;
@@ -249,6 +259,11 @@ namespace features {
                     if (target.x == 0.0f && target.y == 0.0f && target.z == 0.0f) {
                         target = p.position;
                         target.y += 1.45f;
+                    }
+                    if (aimbot_config.aim_only_visible && cam_pos_ok &&
+                        !safe_is_visible(cam_pos, target)) {
+                        locked_target_ptr = 0;
+                        break;
                     }
                     g_aim_last_success = safe_aim_at_world(target);
                     return;
@@ -279,6 +294,9 @@ namespace features {
 
             Vector2 screen;
             if (!safe_world_to_screen(target, screen, cam))
+                continue;
+            if (aimbot_config.aim_only_visible && cam_pos_ok &&
+                !safe_is_visible(cam_pos, target))
                 continue;
             float dx = screen.x - cx, dy = screen.y - cy;
             float dist = sqrtf(dx * dx + dy * dy);
