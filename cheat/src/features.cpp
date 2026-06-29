@@ -554,13 +554,17 @@ namespace features {
                 ImU32 station_color = station.source_type == 1
                     ? IM_COL32(80, 180, 255, 255)
                     : IM_COL32(80, 255, 120, 255);
-                ImVec2 center(screen.x, screen.y);
-                draw_list->AddCircleFilled(center, size * 0.5f, IM_COL32(0, 0, 0, 150), 16);
-                draw_list->AddCircle(center, size * 0.5f, station_color, 16, 1.5f);
-                draw_list->AddLine(ImVec2(screen.x - size * 0.25f, screen.y),
-                    ImVec2(screen.x + size * 0.25f, screen.y), station_color, 1.5f);
-                draw_list->AddLine(ImVec2(screen.x, screen.y - size * 0.25f),
-                    ImVec2(screen.x, screen.y + size * 0.25f), station_color, 1.5f);
+                float radius = size * 0.5f;
+                ImVec2 center(floorf(screen.x) + 0.5f, floorf(screen.y) + 0.5f);
+                draw_list->AddCircleFilled(center, radius, IM_COL32(0, 0, 0, 150), 16);
+                draw_list->AddCircle(center, radius, station_color, 16, 1.5f);
+
+                float arm = 3.75f;
+                float half_thickness = 0.75f;
+                draw_list->AddRectFilled(ImVec2(center.x - arm, center.y - half_thickness),
+                    ImVec2(center.x + arm, center.y + half_thickness), station_color);
+                draw_list->AddRectFilled(ImVec2(center.x - half_thickness, center.y - arm),
+                    ImVec2(center.x + half_thickness, center.y + arm), station_color);
 
                 char label[64];
                 if (esp_config.show_distance)
@@ -568,7 +572,7 @@ namespace features {
                 else
                     snprintf(label, sizeof(label), "%s", station.name.c_str());
                 ImVec2 label_size = ImGui::CalcTextSize(label);
-                ImVec2 label_pos(screen.x - label_size.x * 0.5f, screen.y - size - label_size.y - 3.0f);
+                ImVec2 label_pos(center.x - label_size.x * 0.5f, center.y - radius - label_size.y - 2.0f);
                 draw_list->AddText(ImVec2(label_pos.x + 1.0f, label_pos.y + 1.0f),
                     IM_COL32(0, 0, 0, 190), label);
                 draw_list->AddText(label_pos, station_color, label);
