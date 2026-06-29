@@ -421,8 +421,12 @@ namespace features {
             float width = body_height * 0.52f;
             float center_x = (head_screen.x + foot_screen.x) * 0.5f;
             ImVec2 center(center_x, top);
-            if (center.x + width * 0.5f < 0.0f || center.x - width * 0.5f > (float)sw ||
-                center.y + height < 0.0f || center.y > (float)sh)
+            float box_left = center.x - width * 0.5f;
+            float box_right = center.x + width * 0.5f;
+            float box_top = center.y;
+            float box_bottom = center.y + height;
+            if (box_right < 0.0f || box_left > (float)sw ||
+                box_bottom < 0.0f || box_top > (float)sh)
                 continue;
 
             ImU32 color = (player.team_known && player.is_teammate)
@@ -430,26 +434,38 @@ namespace features {
                 : IM_COL32(255, 0, 0, 255);
 
             if (esp_config.show_boxes) {
-                draw_list->AddRect(ImVec2(center.x - width / 2, center.y),
-                    ImVec2(center.x + width / 2, center.y + height), color, 0.0f, 0, 1.5f);
+                draw_list->AddRect(ImVec2(box_left, box_top),
+                    ImVec2(box_right, box_bottom), color, 0.0f, 0, 1.5f);
             }
 
             if (esp_config.show_lines) {
                 draw_list->AddLine(ImVec2(sw / 2.0f, (float)sh),
-                    ImVec2(center.x, center.y + height), color, 1.0f);
+                    ImVec2(center.x, box_bottom), color, 1.0f);
             }
 
             if (esp_config.show_names) {
-                ImVec2 name_size = ImGui::CalcTextSize(player.name.c_str());
-                draw_list->AddText(ImVec2(center.x - name_size.x * 0.5f, center.y - name_size.y - 2.0f),
-                    color, player.name.c_str());
+                ImFont* name_font = renderer::get_esp_name_font();
+                float name_size_px = renderer::get_esp_name_font_size();
+                ImVec2 name_size = name_font
+                    ? name_font->CalcTextSizeA(name_size_px, FLT_MAX, 0.0f, player.name.c_str())
+                    : ImGui::CalcTextSize(player.name.c_str());
+                ImVec2 name_pos(center.x - name_size.x * 0.5f, box_top - name_size.y - 3.0f);
+                if (name_font) {
+                    draw_list->AddText(name_font, name_size_px, ImVec2(name_pos.x + 1.0f, name_pos.y + 1.0f),
+                        IM_COL32(0, 0, 0, 180), player.name.c_str());
+                    draw_list->AddText(name_font, name_size_px, name_pos, color, player.name.c_str());
+                } else {
+                    draw_list->AddText(ImVec2(name_pos.x + 1.0f, name_pos.y + 1.0f),
+                        IM_COL32(0, 0, 0, 180), player.name.c_str());
+                    draw_list->AddText(name_pos, color, player.name.c_str());
+                }
             }
 
             if (esp_config.show_distance) {
                 float dist = (player.position - cpos).magnitude();
                 char buf[32];
                 snprintf(buf, sizeof(buf), "%.0fm", dist);
-                draw_list->AddText(ImVec2(center.x - 15, center.y + height), IM_COL32(255, 255, 255, 255), buf);
+                draw_list->AddText(ImVec2(center.x - 15, box_bottom), IM_COL32(255, 255, 255, 255), buf);
             }
 
             if (esp_config.show_health && player.max_health > 0) {
@@ -460,13 +476,17 @@ namespace features {
                     hp_pct = 0.0f;
                 if (hp_pct > 1.0f)
                     hp_pct = 1.0f;
-                float bar_h = height * 0.8f;
-                float bar_w = 4.0f;
-                float bar_x = center.x + width / 2 + 2;
-                float bar_y = center.y + height * 0.1f;
-                draw_list->AddRectFilled(ImVec2(bar_x, bar_y), ImVec2(bar_x + bar_w, bar_y + bar_h), IM_COL32(0, 0, 0, 180));
-                ImU32 hp_color = IM_COL32((int)((1 - hp_pct) * 255), (int)(hp_pct * 255), 0, 255);
-                draw_list->AddRectFilled(ImVec2(bar_x, bar_y + bar_h * (1 - hp_pct)), ImVec2(bar_x + bar_w, bar_y + bar_h), hp_color);
+                float bar_w = 3.0f;
+                float bar_gap = 3.0f;
+                float bar_x = box_left - bar_gap - bar_w;
+                float fill_top = box_bottom - height * hp_pct;
+                draw_list->AddRectFilled(ImVec2(bar_x - 1.0f, box_top - 1.0f),
+                    ImVec2(bar_x + bar_w + 1.0f, box_bottom + 1.0f), IM_COL32(0, 0, 0, 190));
+                draw_list->AddRectFilled(ImVec2(bar_x, box_top),
+                    ImVec2(bar_x + bar_w, box_bottom), IM_COL32(25, 25, 25, 210));
+                ImU32 hp_color = IM_COL32((int)((1.0f - hp_pct) * 220.0f), (int)(80.0f + hp_pct * 155.0f), 45, 255);
+                draw_list->AddRectFilled(ImVec2(bar_x, fill_top),
+                    ImVec2(bar_x + bar_w, box_bottom), hp_color);
             }
         }
 

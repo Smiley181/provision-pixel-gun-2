@@ -33,6 +33,8 @@ namespace renderer {
     static std::atomic<int> g_last_completed_stage{ 0 };
     static std::atomic<unsigned int> g_last_sync{ 0 };
     static std::atomic<unsigned int> g_last_flags{ 0 };
+    static ImFont* g_esp_name_font = nullptr;
+    static float g_esp_name_font_size = 12.0f;
 
     typedef HRESULT(__stdcall* present_fn)(IDXGISwapChain*, UINT, UINT);
     static present_fn original_present = nullptr;
@@ -221,6 +223,11 @@ namespace renderer {
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags = ImGuiConfigFlags_NoMouseCursorChange;
+        ImFont* default_font = io.Fonts->AddFontDefault();
+        io.FontDefault = default_font;
+        g_esp_name_font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\verdana.ttf", g_esp_name_font_size);
+        if (!g_esp_name_font)
+            g_esp_name_font = default_font;
         ImGui::StyleColorsDark();
         ImGui_ImplWin32_Init(g_window);
         ImGui_ImplDX11_Init(g_device, g_context);
@@ -229,7 +236,7 @@ namespace renderer {
             SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(wndproc_hook)));
 
         g_imgui_ready = true;
-        printf("[cheat] ImGui ready on game GPU\n");
+        printf("[cheat] ImGui ready on game GPU (esp_name_font=%p)\n", g_esp_name_font);
         return true;
     }
 
@@ -375,6 +382,7 @@ namespace renderer {
         if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; }
         if (g_context) { g_context->Release(); g_context = nullptr; }
         if (g_device) { g_device->Release(); g_device = nullptr; }
+        g_esp_name_font = nullptr;
         g_imgui_ready = false;
         g_initialized = false;
     }
@@ -383,4 +391,6 @@ namespace renderer {
     ID3D11Device* get_device() { return g_device; }
     ID3D11DeviceContext* get_context() { return g_context; }
     HWND get_window() { return g_window; }
+    ImFont* get_esp_name_font() { return g_esp_name_font; }
+    float get_esp_name_font_size() { return g_esp_name_font_size; }
 }
