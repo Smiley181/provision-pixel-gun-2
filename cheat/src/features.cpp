@@ -197,25 +197,34 @@ namespace features {
     void run_aimbot() {
         g_aim_last_success = false;
         g_aim_hold_active = false;
+        static uintptr_t locked_target_ptr = 0;
 
         if (!aimbot_config.enabled) {
+            locked_target_ptr = 0;
             return;
         }
 
         bool mouse5_down = (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0;
-        if (aimbot_config.aim_on_mouse5_hold && !mouse5_down)
+        if (aimbot_config.aim_on_mouse5_hold && !mouse5_down) {
+            locked_target_ptr = 0;
             return;
+        }
         g_aim_hold_active = true;
 
         if (!unity::is_ready()) {
             g_aim_hold_active = false;
+            locked_target_ptr = 0;
             return;
         }
         if (!unity::get_debug_player_camera_cached()) {
             g_aim_hold_active = false;
+            locked_target_ptr = 0;
             return;
         }
-        if (g_players.empty()) return;
+        if (g_players.empty()) {
+            locked_target_ptr = 0;
+            return;
+        }
 
         void* cam = safe_get_main_camera();
         if (!cam) return;
@@ -228,7 +237,29 @@ namespace features {
         float sh = (float)(rect.bottom - rect.top);
         float cx = sw * 0.5f, cy = sh * 0.5f;
 
+        // Stick to the locked target until it dies
+        if (locked_target_ptr != 0) {
+            for (auto& p : g_players) {
+                if (p.object_ptr == locked_target_ptr) {
+                    if (p.is_dead || !p.is_valid) {
+                        locked_target_ptr = 0;
+                        break;
+                    }
+                    Vector3 target = p.head_position;
+                    if (target.x == 0.0f && target.y == 0.0f && target.z == 0.0f) {
+                        target = p.position;
+                        target.y += 1.45f;
+                    }
+                    g_aim_last_success = safe_aim_at_world(target);
+                    return;
+                }
+            }
+            locked_target_ptr = 0;
+        }
+
+        // No lock or target died — acquire the closest valid target
         float closest_dist = aimbot_config.fov * 4.0f;
+        uintptr_t best_ptr = 0;
         Vector3 best_target;
         bool found_target = false;
 
@@ -254,11 +285,13 @@ namespace features {
             if (dist < closest_dist) {
                 closest_dist = dist;
                 best_target = target;
+                best_ptr = p.object_ptr;
                 found_target = true;
             }
         }
 
         if (found_target) {
+            locked_target_ptr = best_ptr;
             g_aim_last_success = safe_aim_at_world(best_target);
         }
     }
