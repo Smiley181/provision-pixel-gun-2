@@ -21,23 +21,6 @@ namespace features {
     }
 
     struct Vec2 { float x, y; };
-    struct EspSmoothState {
-        uintptr_t key;
-        Vector2 foot;
-        Vector2 head;
-        DWORD last_seen;
-        bool initialized;
-    };
-
-    static std::vector<EspSmoothState> g_esp_smooth;
-
-    static float clamp_float(float value, float min_value, float max_value) {
-        if (value < min_value)
-            return min_value;
-        if (value > max_value)
-            return max_value;
-        return value;
-    }
 
     static bool is_finite_screen_point(const Vector2& point) {
         return std::isfinite(point.x) && std::isfinite(point.y) &&
@@ -79,58 +62,6 @@ namespace features {
             return false;
 
         return true;
-    }
-
-    static void smooth_screen_pair(uintptr_t key, Vector2& foot, Vector2& head, DWORD now) {
-        if (!key)
-            return;
-
-        EspSmoothState* state = nullptr;
-        for (auto& entry : g_esp_smooth) {
-            if (entry.key == key) {
-                state = &entry;
-                break;
-            }
-        }
-
-        if (!state) {
-            g_esp_smooth.push_back({ key, foot, head, now, true });
-            return;
-        }
-
-        DWORD elapsed = now - state->last_seen;
-        float foot_dx = foot.x - state->foot.x;
-        float foot_dy = foot.y - state->foot.y;
-        float head_dx = head.x - state->head.x;
-        float head_dy = head.y - state->head.y;
-        bool snap = elapsed > 200 ||
-            (foot_dx * foot_dx + foot_dy * foot_dy) > 40000.0f ||
-            (head_dx * head_dx + head_dy * head_dy) > 40000.0f;
-
-        if (!state->initialized || snap) {
-            state->foot = foot;
-            state->head = head;
-            state->initialized = true;
-        } else {
-            float alpha = clamp_float((float)elapsed / 25.0f, 0.55f, 1.0f);
-            state->foot.x += (foot.x - state->foot.x) * alpha;
-            state->foot.y += (foot.y - state->foot.y) * alpha;
-            state->head.x += (head.x - state->head.x) * alpha;
-            state->head.y += (head.y - state->head.y) * alpha;
-        }
-
-        state->last_seen = now;
-        foot = state->foot;
-        head = state->head;
-    }
-
-    static void prune_esp_smoothing(DWORD now) {
-        for (auto it = g_esp_smooth.begin(); it != g_esp_smooth.end();) {
-            if (now - it->last_seen > 1000)
-                it = g_esp_smooth.erase(it);
-            else
-                ++it;
-        }
     }
 
     static void* safe_get_main_camera() {
@@ -199,14 +130,16 @@ namespace features {
         if (unity::is_ready())
             safe_ensure_main_thread_tracking();
 
-        if (now - last_refresh >= 50) {
-            last_refresh = now;
-            auto refreshed = unity::refresh_cached_players();
-            if (!refreshed.empty()) {
-                g_players = refreshed;
-                empty_scan_count = 0;
-                scan_interval = 5000;
-            }
+        // Refresh live player positions every frame so the ESP tracks smoothly
+        // instead of stepping at a fixed cadence. This path only reads cached
+        // transform positions (no scene-wide FindObjectsOfType scans), so it is
+        // cheap enough to run per Present. The heavy scan below is still throttled.
+        last_refresh = now;
+        auto refreshed = unity::refresh_cached_players();
+        if (!refreshed.empty()) {
+            g_players = refreshed;
+            empty_scan_count = 0;
+            scan_interval = 5000;
         }
 
         if (unity::has_tracked_scene_state() || unity::has_recent_main_thread_tracking())
@@ -459,17 +392,24 @@ namespace features {
             if (!valid_esp_projection(player.position, head_world, foot_screen, head_screen, sw, sh))
                 continue;
 
-            smooth_screen_pair(player.avatar_ptr ? player.avatar_ptr : player.object_ptr, foot_screen, head_screen, now);
-            if (!valid_esp_projection(player.position, head_world, foot_screen, head_screen, sw, sh))
-                continue;
+            // No screen-space smoothing: positions are refreshed every frame and
+            // projected through this frame's camera matrix, so the box stays
+            // locked to the player during mouse movement instead of trailing it.
 
             float height = fabsf(foot_screen.y - head_screen.y);
             if (height < 18.0f)
                 height = 18.0f;
             if (height > sh * 0.9f)
                 height = sh * 0.9f;
+            // Lift the box top slightly above the head bone so it clears the
+            // player's head. The bottom stays at the feet and the box grows by
+            // `lift`, so only the top edge moves up. This is purely cosmetic for
+            // the ESP: the aimbot aims at the real head bone position directly
+            // (run_aimbot), so this offset never affects the aim point.
+            float lift = height * 0.12f;
+            height += lift;
             float width = height * 0.5f;
-            ImVec2 center(head_screen.x, head_screen.y);
+            ImVec2 center(head_screen.x, head_screen.y - lift);
             if (center.x + width * 0.5f < 0.0f || center.x - width * 0.5f > (float)sw ||
                 center.y + height < 0.0f || center.y > (float)sh)
                 continue;
@@ -547,7 +487,6 @@ namespace features {
             }
         }
         }
-        prune_esp_smoothing(now);
 
 draw_cam_overlay:
         if (cam) {
