@@ -189,10 +189,19 @@ namespace unity {
     static int g_grenade_count = 0;
     static int g_refill_station_count = 0;
     static std::vector<PlayerInfo> g_cached_players;
-    static std::vector<uintptr_t> g_tracked_mobs;
-    static std::vector<uintptr_t> g_chams_enemy_mobs;
-    static std::vector<uintptr_t> g_tracked_game_modes;
+    struct TimedPointer {
+        uintptr_t ptr;
+        DWORD last_seen_ms;
+    };
+
+    static std::vector<TimedPointer> g_tracked_mobs;
+    static std::vector<TimedPointer> g_chams_enemy_mobs;
+    static std::vector<TimedPointer> g_tracked_game_modes;
     static DWORD g_last_xray_present_ms = 0;
+
+    static constexpr DWORD kTrackedMobTtlMs = 5000;
+    static constexpr DWORD kTrackedGameModeTtlMs = 3500;
+    static constexpr DWORD kTrackedChamsEnemyTtlMs = 3000;
 
     struct PlayerIdentityEntry {
         uintptr_t mob_ptr;
@@ -205,6 +214,7 @@ namespace unity {
     static DWORD g_last_identity_scan_ms = 0;
 
     static void xray_hook_install();
+    static void purge_tracked_scene_state(DWORD now = GetTickCount());
 
     static constexpr uintptr_t RVA_HealthComponent_get_State = 0x1187720;
     static constexpr uintptr_t RVA_DeathComponent_get_DeathState = 0x11BCC20;
@@ -253,6 +263,7 @@ namespace unity {
     int get_debug_grenade_count() { return g_grenade_count; }
     int get_debug_refill_station_count() { return g_refill_station_count; }
     bool has_tracked_scene_state() {
+        purge_tracked_scene_state();
         return !g_tracked_game_modes.empty() || !g_chams_enemy_mobs.empty();
     }
     bool has_recent_main_thread_tracking() {
@@ -310,46 +321,51 @@ namespace unity {
         g_cached_players = players;
     }
 
-    static void track_mob_pointer(void* mob) {
-        if (!mob)
+    static void purge_stale_pointers(std::vector<TimedPointer>& entries, DWORD ttl_ms, DWORD now = GetTickCount()) {
+        for (size_t i = 0; i < entries.size();) {
+            if (!entries[i].ptr || now - entries[i].last_seen_ms > ttl_ms)
+                entries.erase(entries.begin() + i);
+            else
+                i++;
+        }
+    }
+
+    static void purge_tracked_scene_state(DWORD now) {
+        purge_stale_pointers(g_tracked_mobs, kTrackedMobTtlMs, now);
+        purge_stale_pointers(g_tracked_game_modes, kTrackedGameModeTtlMs, now);
+        purge_stale_pointers(g_chams_enemy_mobs, kTrackedChamsEnemyTtlMs, now);
+    }
+
+    static void track_timed_pointer(std::vector<TimedPointer>& entries, uintptr_t ptr, size_t max_entries, DWORD now = GetTickCount()) {
+        if (!ptr)
             return;
 
-        uintptr_t ptr = (uintptr_t)mob;
-        for (uintptr_t tracked : g_tracked_mobs) {
-            if (tracked == ptr)
+        for (TimedPointer& tracked : entries) {
+            if (tracked.ptr == ptr) {
+                tracked.last_seen_ms = now;
                 return;
+            }
         }
 
-        if (g_tracked_mobs.size() < 128)
-            g_tracked_mobs.push_back(ptr);
+        if (entries.size() >= max_entries)
+            entries.erase(entries.begin());
+
+        TimedPointer entry = {};
+        entry.ptr = ptr;
+        entry.last_seen_ms = now;
+        entries.push_back(entry);
+    }
+
+    static void track_mob_pointer(void* mob) {
+        track_timed_pointer(g_tracked_mobs, (uintptr_t)mob, 128);
     }
 
     static void track_game_mode_pointer(void* game_mode) {
-        if (!game_mode)
-            return;
-
-        uintptr_t ptr = (uintptr_t)game_mode;
-        for (uintptr_t tracked : g_tracked_game_modes) {
-            if (tracked == ptr)
-                return;
-        }
-
-        if (g_tracked_game_modes.size() < 8)
-            g_tracked_game_modes.push_back(ptr);
+        track_timed_pointer(g_tracked_game_modes, (uintptr_t)game_mode, 8);
     }
 
     static void track_chams_enemy_mob_pointer(void* mob) {
-        if (!mob)
-            return;
-
-        uintptr_t ptr = (uintptr_t)mob;
-        for (uintptr_t tracked : g_chams_enemy_mobs) {
-            if (tracked == ptr)
-                return;
-        }
-
-        if (g_chams_enemy_mobs.size() < 128)
-            g_chams_enemy_mobs.push_back(ptr);
+        track_timed_pointer(g_chams_enemy_mobs, (uintptr_t)mob, 128);
     }
 
     static bool contains_rendered_ptr(uintptr_t* rendered, int rendered_count, uintptr_t ptr) {
@@ -2338,7 +2354,7 @@ namespace unity {
 
     static void refresh_player_identity_cache(bool force = false) {
         DWORD now = GetTickCount();
-        if (!force && g_last_identity_scan_ms != 0 && now - g_last_identity_scan_ms < 2500)
+        if (!force && g_last_identity_scan_ms != 0 && now - g_last_identity_scan_ms < 7500)
             return;
         g_last_identity_scan_ms = now;
 
@@ -2709,8 +2725,9 @@ namespace unity {
         if (apply_game_mode_relation_team_info(pi, game_mode, mob, bot))
             return true;
 
-        for (uintptr_t tracked : g_tracked_game_modes) {
-            if (apply_game_mode_relation_team_info(pi, (void*)tracked, mob, bot))
+        purge_stale_pointers(g_tracked_game_modes, kTrackedGameModeTtlMs);
+        for (const TimedPointer& tracked : g_tracked_game_modes) {
+            if (apply_game_mode_relation_team_info(pi, (void*)tracked.ptr, mob, bot))
                 return true;
         }
 
@@ -3933,8 +3950,10 @@ namespace unity {
 
     static void append_chams_enemy_players(std::vector<PlayerInfo>& players,
         uintptr_t* rendered, int& rendered_count) {
+        purge_stale_pointers(g_chams_enemy_mobs, kTrackedChamsEnemyTtlMs);
         int index = 0;
-        for (uintptr_t mob_ptr : g_chams_enemy_mobs) {
+        for (const TimedPointer& tracked : g_chams_enemy_mobs) {
+            uintptr_t mob_ptr = tracked.ptr;
             void* mob = (void*)mob_ptr;
             if (!mob)
                 continue;
@@ -4041,8 +4060,8 @@ namespace unity {
         if (has_tracked_scene_state())
             refresh_player_identity_cache(false);
 
-        for (uintptr_t game_mode_ptr : g_tracked_game_modes) {
-            add_game_mode_players((void*)game_mode_ptr, refreshed, rendered, rendered_count);
+        for (const TimedPointer& tracked : g_tracked_game_modes) {
+            add_game_mode_players((void*)tracked.ptr, refreshed, rendered, rendered_count);
         }
 
         append_chams_enemy_players(refreshed, rendered, rendered_count);
@@ -4136,8 +4155,8 @@ namespace unity {
         if (has_tracked_scene_state())
             refresh_player_identity_cache(false);
 
-        for (uintptr_t game_mode_ptr : g_tracked_game_modes) {
-            add_game_mode_players((void*)game_mode_ptr, players, rendered, rendered_count);
+        for (const TimedPointer& tracked : g_tracked_game_modes) {
+            add_game_mode_players((void*)tracked.ptr, players, rendered, rendered_count);
         }
 
         append_chams_enemy_players(players, rendered, rendered_count);
@@ -4486,6 +4505,7 @@ namespace unity {
     static volatile bool g_chams_enabled = false;
     static volatile bool g_chams_xray = false;
     static volatile bool g_chams_glow = false;
+    static volatile bool g_chams_cleanup_requested = false;
     static float g_chams_color[4] = {};
 
     // Cached Material.set_color for xray fill material color
@@ -4544,11 +4564,18 @@ namespace unity {
     static void* g_xray_trampoline_ptr = nullptr;
     static bool g_xray_hook_installed = false;
 
+    static void finish_chams_cleanup() {
+        g_chams_cleanup_requested = false;
+        g_chams_enemy_mobs.clear();
+    }
+
     // Called on main Unity thread from the replacement function.
     // Applies chams only to enemies. Apply-first so configs are initialized,
     // then write color, ensuring the value sticks.
     static void apply_chams_from_xray_system(void* self) {
-        g_last_xray_present_ms = GetTickCount();
+        DWORD now = GetTickCount();
+        g_last_xray_present_ms = now;
+        purge_tracked_scene_state(now);
 
         void* game_mode = nullptr;
         __try { game_mode = safe_read_ptr(self, 0x28); } // XrayPresentSystem._gameMode
@@ -4556,18 +4583,39 @@ namespace unity {
         if (game_mode)
             track_game_mode_pointer(game_mode);
 
+        bool enabled = g_chams_enabled;
+        bool cleanup = g_chams_cleanup_requested;
+        if (!enabled && !cleanup)
+            return;
+
         void* list_ptr = nullptr;
         __try { list_ptr = *(void**)((uintptr_t)self + 0x30); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { return; }
-        if (!list_ptr) return;
+        __except(EXCEPTION_EXECUTE_HANDLER) {
+            if (cleanup)
+                finish_chams_cleanup();
+            return;
+        }
+        if (!list_ptr) {
+            if (cleanup)
+                finish_chams_cleanup();
+            return;
+        }
 
         int count = 0;
         void** arr = nullptr;
         __try {
             arr = *(void***)((uintptr_t)list_ptr + 0x10);
             count = *(int*)((uintptr_t)list_ptr + 0x18);
-        } __except(EXCEPTION_EXECUTE_HANDLER) { return; }
-        if (!arr || count <= 0) return;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            if (cleanup)
+                finish_chams_cleanup();
+            return;
+        }
+        if (!arr || count <= 0) {
+            if (cleanup)
+                finish_chams_cleanup();
+            return;
+        }
         if (count > 64) count = 64;
 
         for (int i = 0; i < count; i++) {
@@ -4582,12 +4630,19 @@ namespace unity {
             __except(EXCEPTION_EXECUTE_HANDLER) { relation = 0; }
             if (relation != 2) continue;
 
-            track_chams_enemy_mob_pointer(safe_read_ptr(pv, 0x50)); // PlayerMobBeh._playerMob
+            void* mob = safe_read_ptr(pv, 0x50); // PlayerMobBeh._playerMob
+            if (enabled)
+                track_chams_enemy_mob_pointer(mob);
 
-            __try { rva_remove_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-            __try { rva_remove_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            if (cleanup || !g_chams_xray) {
+                __try { rva_remove_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            }
+            if (cleanup || !g_chams_glow) {
+                __try { rva_remove_effect(pv, CHAMS_GLOW); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            }
 
-            if (!g_chams_enabled) continue;
+            if (!enabled || cleanup)
+                continue;
 
             if (g_chams_glow) {
                 // Apply glow first so config is initialized, then write color
@@ -4597,6 +4652,10 @@ namespace unity {
             if (g_chams_xray) {
                 __try { rva_apply_effect(pv, CHAMS_XRAY); } __except(EXCEPTION_EXECUTE_HANDLER) {}
             }
+        }
+
+        if (cleanup) {
+            finish_chams_cleanup();
         }
     }
 
@@ -4648,9 +4707,14 @@ namespace unity {
 
     void set_chams_enabled(bool enabled, bool xray, bool glow, const float color[4]) {
         // Write config for the hook (reads these on main thread)
+        bool was_enabled = g_chams_enabled;
         g_chams_enabled = enabled;
         g_chams_xray = xray;
         g_chams_glow = glow;
+        if (was_enabled && !enabled)
+            g_chams_cleanup_requested = true;
+        if (enabled)
+            g_chams_cleanup_requested = false;
         if (color) {
             g_chams_color[0] = color[0];
             g_chams_color[1] = color[1];
